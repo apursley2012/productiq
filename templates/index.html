@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="ProductIQ researches Amazon products from ASINs, URLs, names, CSV files, and Excel workbooks.">
+  <title>ProductIQ | Amazon Product Research</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body data-max-batch="{{ max_batch }}">
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="ProductIQ home"><span class="brand-mark">P</span><span>Product<span>IQ</span></span></a>
+    <nav aria-label="Primary navigation">
+      <a href="#research">Research</a><a href="#results">Results</a><a href="#about">How it works</a>
+    </nav>
+  </header>
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Amazon product research workspace</p>
+        <h1>Research product listings without hand-copying every field.</h1>
+        <p>Upload a spreadsheet or paste Amazon ASINs, URLs, and product names. ProductIQ retrieves available listing details, organizes the results, and exports a clean Excel workbook.</p>
+        <a class="button primary" href="#research">Start product research</a>
+      </div>
+      <div class="hero-flow" aria-label="Workflow overview">
+        <div><b>01</b><span>Upload or paste products</span></div>
+        <div><b>02</b><span>Research Amazon listings</span></div>
+        <div><b>03</b><span>Review and edit results</span></div>
+        <div><b>04</b><span>Export to Excel</span></div>
+      </div>
+    </section>
+
+    <section id="research" class="workspace section-shell">
+      <div class="section-heading"><div><p class="eyebrow">Research queue</p><h2>Add products</h2></div><p>Up to {{ max_batch }} products per batch on the free hosted version.</p></div>
+      <div class="input-grid">
+        <article class="card">
+          <h3>Paste products</h3>
+          <p>Enter one ASIN, Amazon URL, or product name per line.</p>
+          <textarea id="product-input" rows="11" placeholder="B0XXXXXXXXX&#10;https://www.amazon.com/dp/B0XXXXXXXXX&#10;Adjustable laptop stand"></textarea>
+          <button id="add-lines" class="button secondary" type="button">Add to queue</button>
+        </article>
+        <article class="card">
+          <h3>Upload spreadsheet</h3>
+          <p>Upload CSV or XLSX containing an ASIN, URL, title, or product-name column.</p>
+          <label class="dropzone" for="file-input"><strong>Choose CSV or XLSX</strong><span id="file-label">No file selected</span><input id="file-input" type="file" accept=".csv,.xlsx"></label>
+          <div id="mapping" class="mapping hidden">
+            <label>ASIN column<select id="map-asin"></select></label>
+            <label>URL column<select id="map-url"></select></label>
+            <label>Name column<select id="map-name"></select></label>
+            <button id="add-upload" class="button secondary" type="button">Add imported rows</button>
+          </div>
+          <div id="upload-message" class="notice hidden" role="status"></div>
+        </article>
+      </div>
+
+      <article class="card queue-card">
+        <div class="card-heading"><div><h3>Products ready to research</h3><p id="queue-count">0 products</p></div><button id="clear-queue" class="text-button" type="button">Clear queue</button></div>
+        <div id="queue-empty" class="empty">Your queue is empty.</div>
+        <div id="queue-wrap" class="table-wrap hidden"><table><thead><tr><th>Input</th><th>Type</th><th></th></tr></thead><tbody id="queue-body"></tbody></table></div>
+        <div class="run-row"><button id="run-research" class="button primary" type="button" disabled>Research products</button><p id="run-note">If Amazon displays a CAPTCHA, ProductIQ pauses the active session, shows the challenge, and resumes after you enter it.</p></div>
+      </article>
+    </section>
+
+    <section id="progress-section" class="section-shell hidden">
+      <article class="card progress-card">
+        <div class="card-heading"><div><p class="eyebrow">Live progress</p><h2 id="progress-title">Researching products</h2></div><strong id="progress-number">0 / 0</strong></div>
+        <div class="progress-track"><span id="progress-bar"></span></div>
+        <p id="progress-message">Preparing the research job…</p>
+      </article>
+    </section>
+
+    <section id="results" class="section-shell">
+      <div class="section-heading"><div><p class="eyebrow">Research output</p><h2>Results</h2></div><div class="button-row"><button id="export-xlsx" class="button secondary" type="button" disabled>Download Excel</button><button id="clear-results" class="text-button" type="button">Clear saved results</button></div></div>
+      <div id="results-empty" class="card empty">Completed products will appear here.</div>
+      <div id="results-list" class="results-grid"></div>
+    </section>
+
+    <section id="about" class="section-shell about-grid">
+      <article class="card"><p class="eyebrow">What it extracts</p><h2>Listing information</h2><p>ProductIQ attempts to retrieve title, brand, price, availability, rating, reviews, seller, bullets, description, categories, technical details, dimensions, weight, manufacturer, and product images.</p></article>
+      <article class="card"><p class="eyebrow">Important limitation</p><h2>Real pages, real failures</h2><p>Amazon can change its page structure or show CAPTCHAs. ProductIQ reports those failures instead of creating fake data. Smaller batches and slower retries are more dependable.</p></article>
+    </section>
+  </main>
+  <dialog id="captcha-dialog" class="captcha-dialog">
+    <form id="captcha-form" method="dialog">
+      <p class="eyebrow">Amazon verification</p>
+      <h2>Complete the CAPTCHA to continue</h2>
+      <p id="captcha-message">Amazon paused this research session for human verification.</p>
+      <img id="captcha-image" alt="Amazon CAPTCHA challenge">
+      <label>Characters shown<input id="captcha-answer" type="text" autocomplete="off" autocapitalize="none" required></label>
+      <div class="button-row"><button class="button primary" type="submit">Submit and continue</button><button id="captcha-cancel" class="button secondary" type="button">Stop batch</button></div>
+      <p class="notice">ProductIQ does not automatically bypass CAPTCHAs. This preserves the original scripts’ manual solve-and-resume behavior.</p>
+    </form>
+  </dialog>
+  <footer><strong>ProductIQ</strong><span>Amazon product research and spreadsheet extraction.</span></footer>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+</body>
+</html>
