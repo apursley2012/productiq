@@ -54,9 +54,15 @@ def _extract_asin(value: str) -> str:
     return match.group(1).upper() if match else ""
 
 
-def _headers() -> dict[str, str]:
+def _browser_headers(user_agent: str | None = None) -> dict[str, str]:
+    """Return one browser identity that remains stable for an Amazon session.
+
+    Amazon frequently binds a CAPTCHA image and validation form to the same cookies
+    and browser identity that received the challenge. Randomizing the user agent on
+    every request can therefore make an otherwise valid challenge image disappear.
+    """
     return {
-        "User-Agent": random.choice(USER_AGENTS),
+        "User-Agent": user_agent or random.choice(USER_AGENTS),
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Cache-Control": "no-cache",
@@ -65,12 +71,26 @@ def _headers() -> dict[str, str]:
     }
 
 
+def create_amazon_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(_browser_headers())
+    return session
+
+
+def _ensure_session(session: requests.Session | None) -> requests.Session:
+    if session is None:
+        return create_amazon_session()
+    if not session.headers.get("User-Agent") or session.headers.get("User-Agent", "").startswith("python-requests"):
+        session.headers.update(_browser_headers())
+    return session
+
+
 def _get(url: str, retries: int = 2, session: requests.Session | None = None) -> requests.Response:
+    client = _ensure_session(session)
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            client = session or requests
-            response = client.get(url, headers=_headers(), timeout=(12, 30), allow_redirects=True)
+            response = client.get(url, timeout=(12, 30), allow_redirects=True)
             if response.status_code == 200:
                 # CAPTCHA pages can be much smaller than normal product pages. Return
                 # them so the caller can preserve the session and request manual input.
@@ -111,6 +131,34 @@ def _captcha_challenge(soup: BeautifulSoup, page_url: str) -> dict[str, Any]:
     }
 
 
+def fetch_captcha_image(session: requests.Session, challenge: dict[str, Any]) -> tuple[bytes, str]:
+    """Fetch a CAPTCHA image through the exact session that received it.
+
+    This mirrors the original scripts' single-browser-session behavior: cookies,
+    user agent, Amazon referrer, and challenge fields stay together.
+    """
+    image_url = str(challenge.get("imageUrl") or "").strip()
+    if not image_url:
+        raise AmazonResearchError("Amazon did not provide a CAPTCHA image URL.")
+    page_url = str(challenge.get("pageUrl") or "https://www.amazon.com/")
+    client = _ensure_session(session)
+    headers = {
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Referer": page_url,
+        "Sec-Fetch-Dest": "image",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    response = client.get(image_url, headers=headers, timeout=(12, 30), allow_redirects=True)
+    response.raise_for_status()
+    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if not response.content:
+        raise AmazonResearchError("Amazon returned an empty CAPTCHA image.")
+    if content_type and not content_type.startswith("image/"):
+        raise AmazonResearchError("Amazon returned a page instead of the CAPTCHA image. Reload the challenge and try again.")
+    return response.content, content_type or "image/jpeg"
+
+
 def submit_captcha(session: requests.Session, challenge: dict[str, Any], answer: str) -> requests.Response:
     answer = (answer or "").strip()
     if not answer:
@@ -119,10 +167,15 @@ def submit_captcha(session: requests.Session, challenge: dict[str, Any], answer:
     values["field-keywords"] = answer
     action = challenge.get("action") or "https://www.amazon.com/errors/validateCaptcha"
     method = challenge.get("method", "get")
+    client = _ensure_session(session)
+    submit_headers = {
+        "Referer": str(challenge.get("pageUrl") or "https://www.amazon.com/"),
+        "Origin": "https://www.amazon.com",
+    }
     if method == "post":
-        response = session.post(action, data=values, headers=_headers(), timeout=(12, 30), allow_redirects=True)
+        response = client.post(action, data=values, headers=submit_headers, timeout=(12, 30), allow_redirects=True)
     else:
-        response = session.get(action, params=values, headers=_headers(), timeout=(12, 30), allow_redirects=True)
+        response = client.get(action, params=values, headers=submit_headers, timeout=(12, 30), allow_redirects=True)
     soup = BeautifulSoup(response.text, "lxml")
     if _is_blocked(soup, response.text):
         raise AmazonCaptchaRequired(
@@ -156,8 +209,10 @@ def _json_ld(soup: BeautifulSoup) -> dict[str, Any]:
             continue
         objects = data if isinstance(data, list) else [data]
         for obj in objects:
-            if isinstance(obj, dict) and obj.get("@type") in {"Product", ["Product"]}:
-                return obj
+            if isinstance(obj, dict):
+                object_type = obj.get("@type")
+                if object_type == "Product" or (isinstance(object_type, list) and "Product" in object_type):
+                    return obj
             if isinstance(obj, dict) and isinstance(obj.get("@graph"), list):
                 for item in obj["@graph"]:
                     if isinstance(item, dict) and item.get("@type") == "Product":
