@@ -4,13 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="ProductIQ researches Amazon products from ASINs, URLs, names, CSV files, and Excel workbooks.">
+  <meta name="theme-color" content="#0F172A">
   <title>ProductIQ | Amazon Product Research</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='assets/productiq-icon.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='assets/productiq-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
 <body data-max-batch="{{ max_batch }}">
   <header class="site-header">
-    <a class="brand" href="#top" aria-label="ProductIQ home"><span class="brand-mark">P</span><span>Product<span>IQ</span></span></a>
+    <a class="brand" href="#top" aria-label="ProductIQ home">
+      <img src="{{ url_for('static', filename='assets/productiq-logo.png') }}" alt="ProductIQ">
+    </a>
     <nav aria-label="Primary navigation">
       <a href="#research">Research</a><a href="#results">Results</a><a href="#about">How it works</a>
     </nav>
@@ -18,15 +23,16 @@
   <main id="top">
     <section class="hero">
       <div class="hero-copy">
+        <img class="hero-brand" src="{{ url_for('static', filename='assets/productiq-hero-logo.png') }}" alt="ProductIQ">
         <p class="eyebrow">Amazon product research workspace</p>
         <h1>Research product listings without hand-copying every field.</h1>
         <p>Upload a spreadsheet or paste Amazon ASINs, URLs, and product names. ProductIQ retrieves available listing details, organizes the results, and exports a clean Excel workbook.</p>
-        <a class="button primary" href="#research">Start product research</a>
+        <a class="button primary hero-button" href="#research">Start product research</a>
       </div>
       <div class="hero-flow" aria-label="Workflow overview">
         <div><b>01</b><span>Upload or paste products</span></div>
         <div><b>02</b><span>Research Amazon listings</span></div>
-        <div><b>03</b><span>Review and edit results</span></div>
+        <div><b>03</b><span>Review extracted results</span></div>
         <div><b>04</b><span>Export to Excel</span></div>
       </div>
     </section>
@@ -58,7 +64,7 @@
         <div class="card-heading"><div><h3>Products ready to research</h3><p id="queue-count">0 products</p></div><button id="clear-queue" class="text-button" type="button">Clear queue</button></div>
         <div id="queue-empty" class="empty">Your queue is empty.</div>
         <div id="queue-wrap" class="table-wrap hidden"><table><thead><tr><th>Input</th><th>Type</th><th></th></tr></thead><tbody id="queue-body"></tbody></table></div>
-        <div class="run-row"><button id="run-research" class="button primary" type="button" disabled>Research products</button><p id="run-note">If Amazon displays a CAPTCHA, ProductIQ pauses the active session, shows the challenge, and resumes after you enter it.</p></div>
+        <div class="run-row"><button id="run-research" class="button primary" type="button" disabled>Research products</button><p id="run-note">If Amazon displays a CAPTCHA, ProductIQ pauses the active Amazon session, keeps its cookies and browser identity, and resumes after you enter the challenge.</p></div>
       </article>
     </section>
 
@@ -81,18 +87,30 @@
       <article class="card"><p class="eyebrow">Important limitation</p><h2>Real pages, real failures</h2><p>Amazon can change its page structure or show CAPTCHAs. ProductIQ reports those failures instead of creating fake data. Smaller batches and slower retries are more dependable.</p></article>
     </section>
   </main>
+
   <dialog id="captcha-dialog" class="captcha-dialog">
     <form id="captcha-form" method="dialog">
-      <p class="eyebrow">Amazon verification</p>
-      <h2>Complete the CAPTCHA to continue</h2>
+      <div class="captcha-heading">
+        <img src="{{ url_for('static', filename='assets/productiq-icon.png') }}" alt="">
+        <div><p class="eyebrow">Amazon verification</p><h2>Complete the CAPTCHA to continue</h2></div>
+      </div>
       <p id="captcha-message">Amazon paused this research session for human verification.</p>
-      <img id="captcha-image" alt="Amazon CAPTCHA challenge">
-      <label>Characters shown<input id="captcha-answer" type="text" autocomplete="off" autocapitalize="none" required></label>
+      <div id="captcha-image-wrap" class="captcha-image-wrap" aria-live="polite">
+        <div id="captcha-loading" class="captcha-loading">Loading Amazon’s challenge…</div>
+        <img id="captcha-image" alt="Amazon CAPTCHA challenge" hidden>
+        <div id="captcha-image-error" class="captcha-image-error hidden">
+          <strong>The CAPTCHA image did not load.</strong>
+          <span>Reload it without restarting the current product or research batch.</span>
+        </div>
+      </div>
+      <button id="captcha-reload" class="text-button captcha-reload" type="button">Reload CAPTCHA image</button>
+      <label>Characters shown<input id="captcha-answer" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
       <div class="button-row"><button class="button primary" type="submit">Submit and continue</button><button id="captcha-cancel" class="button secondary" type="button">Stop batch</button></div>
-      <p class="notice">ProductIQ does not automatically bypass CAPTCHAs. This preserves the original scripts’ manual solve-and-resume behavior.</p>
+      <p class="notice">The challenge is loaded and submitted through the same Amazon session that encountered it. ProductIQ does not automatically solve or bypass CAPTCHAs.</p>
     </form>
   </dialog>
-  <footer><strong>ProductIQ</strong><span>Amazon product research and spreadsheet extraction.</span></footer>
+
+  <footer><img src="{{ url_for('static', filename='assets/productiq-logo.png') }}" alt="ProductIQ"><span>Amazon product research and spreadsheet extraction.</span></footer>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 </body>
 </html>
