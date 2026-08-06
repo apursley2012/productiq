@@ -12,7 +12,14 @@ from openpyxl import Workbook, load_workbook
 
 import requests
 
-from productiq.amazon import AmazonCaptchaRequired, AmazonResearchError, research_product, submit_captcha
+from productiq.amazon import (
+    AmazonCaptchaRequired,
+    AmazonResearchError,
+    create_amazon_session,
+    fetch_captcha_image,
+    research_product,
+    submit_captcha,
+)
 from productiq.files import parse_upload, normalize_input_row
 
 app = Flask(__name__)
@@ -86,7 +93,7 @@ def create_job():
         "results": [],
         "nextIndex": 0,
         "createdAt": time.time(),
-        "_httpSession": requests.Session(),
+        "_httpSession": create_amazon_session(),
         "captcha": None,
     }
     return jsonify({"jobId": job_id, "count": len(items)})
@@ -184,11 +191,18 @@ def captcha_image(job_id: str):
     if not image_url:
         return jsonify({"error": "Amazon did not provide a CAPTCHA image."}), 404
     try:
-        response = job["_httpSession"].get(image_url, timeout=(10, 25), headers={"User-Agent": "Mozilla/5.0"})
-        response.raise_for_status()
-    except requests.RequestException as exc:
+        image_bytes, content_type = fetch_captcha_image(job["_httpSession"], challenge)
+    except (requests.RequestException, AmazonResearchError) as exc:
         return jsonify({"error": f"Could not load the CAPTCHA image: {exc}"}), 502
-    return Response(response.content, content_type=response.headers.get("Content-Type", "image/jpeg"), headers={"Cache-Control": "no-store"})
+    return Response(
+        image_bytes,
+        content_type=content_type,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/api/jobs/<job_id>/captcha")
