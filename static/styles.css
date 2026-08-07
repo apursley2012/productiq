@@ -916,3 +916,84 @@ footer img {
     font-size: 1rem;
   }
 }
+
+/* v6 usability polish: frosted wordmark, tighter logo fit, sample loader, accessible links */
+.hero-brand-shell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 24px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.2);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  backdrop-filter: blur(18px) saturate(135%);
+}
+.hero-brand-shell .hero-brand {
+  display: block !important;
+  width: min(330px, 72vw) !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+.sample-data-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -2px 0 18px;
+  padding: 11px 12px;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: 12px;
+  background: rgba(124, 58, 237, 0.08);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.compact-button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0.55rem 0.75rem;
+}
+main a:not(.button) {
+  color: #c4b5fd;
+  text-decoration-color: rgba(196, 181, 253, 0.58);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+main a:not(.button):visited {
+  color: #d8b4fe;
+}
+main a:not(.button):hover,
+main a:not(.button):focus-visible {
+  color: #67e8f9;
+  text-decoration-color: #67e8f9;
+}
+.result-card a {
+  font-weight: 750;
+}
+@media (max-width: 600px) {
+  .hero-brand-shell {
+    padding: 9px 11px;
+    margin-bottom: 20px;
+  }
+  .hero-brand-shell .hero-brand {
+    width: min(275px, 74vw) !important;
+  }
+  .sample-data-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .sample-data-row .button {
+    width: 100%;
+  }
+}
