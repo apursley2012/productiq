@@ -2,43 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark light">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080b18">
   <title>ProductIQ</title>
-  <link rel="stylesheet" href="styles.css">
+  <style>
+    *{box-sizing:border-box}
+    html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:#080b18}
+    .shell{position:fixed;inset:0;width:100%;height:100%;overflow:hidden;background:#080b18}
+    #productiq-frame{display:block;width:100%;height:100%;border:0;margin:0;padding:0;background:#080b18}
+    #loading{position:absolute;inset:0;z-index:2;display:grid;place-items:center;background:#080b18;color:#fff;font:600 16px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;transition:opacity .2s ease}
+    #loading.hidden{opacity:0;pointer-events:none}
+    #fallback{position:absolute;inset:0;z-index:3;display:none;place-items:center;padding:24px;background:#080b18;color:#fff;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:center}
+    #fallback.show{display:grid}
+    #fallback div{max-width:560px}
+    #fallback a{display:inline-block;margin-top:12px;padding:12px 18px;border-radius:10px;background:#7457ff;color:#fff;text-decoration:none;font-weight:700}
+  </style>
 </head>
 <body>
-  <main class="app-shell">
+  <main class="shell">
+    <div id="loading">Loading ProductIQ…</div>
     <iframe
       id="productiq-frame"
+      src="https://productiq-ws6w.onrender.com"
       title="ProductIQ"
       loading="eager"
-      referrerpolicy="strict-origin-when-cross-origin"
       allow="clipboard-read; clipboard-write"
-    ></iframe>
-
-    <section id="setup-message" class="setup-message" hidden>
-      <h1>ProductIQ needs its live app URL</h1>
-      <p>Open <code>config.js</code> and replace the placeholder with the public URL of the deployed ProductIQ app.</p>
-    </section>
+      referrerpolicy="strict-origin-when-cross-origin">
+    </iframe>
+    <div id="fallback"><div>
+      <h1>ProductIQ could not be displayed.</h1>
+      <p>The Render service may still be waking up, or the embedded page may be temporarily unavailable.</p>
+      <a href="https://productiq-ws6w.onrender.com" target="_blank" rel="noopener noreferrer">Open ProductIQ directly</a>
+    </div></div>
   </main>
-
-  <script src="config.js"></script>
   <script>
-    (() => {
-      const frame = document.getElementById('productiq-frame');
-      const message = document.getElementById('setup-message');
-      const url = String(window.PRODUCTIQ_APP_URL || '').trim();
-      const valid = /^https:\/\//i.test(url) && !url.includes('YOUR-PRODUCTIQ-APP');
-
-      if (!valid) {
-        frame.hidden = true;
-        message.hidden = false;
-        return;
-      }
-
-      frame.src = url.replace(/\/$/, '');
-    })();
+    const frame=document.getElementById('productiq-frame');
+    const loading=document.getElementById('loading');
+    const fallback=document.getElementById('fallback');
+    let loaded=false;
+    frame.addEventListener('load',()=>{loaded=true;loading.classList.add('hidden')});
+    setTimeout(()=>{if(!loaded) loading.textContent='ProductIQ is waking up on Render…';},10000);
+    setTimeout(()=>{if(!loaded){loading.classList.add('hidden');fallback.classList.add('show');}},60000);
   </script>
 </body>
 </html>
