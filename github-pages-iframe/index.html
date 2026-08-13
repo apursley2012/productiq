@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>ProductIQ</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <iframe
+      id="productiq-frame"
+      title="ProductIQ"
+      loading="eager"
+      referrerpolicy="strict-origin-when-cross-origin"
+      allow="clipboard-read; clipboard-write"
+    ></iframe>
+
+    <section id="setup-message" class="setup-message" hidden>
+      <h1>ProductIQ needs its live app URL</h1>
+      <p>Open <code>config.js</code> and replace the placeholder with the public URL of the deployed ProductIQ app.</p>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script>
+    (() => {
+      const frame = document.getElementById('productiq-frame');
+      const message = document.getElementById('setup-message');
+      const url = String(window.PRODUCTIQ_APP_URL || '').trim();
+      const valid = /^https:\/\//i.test(url) && !url.includes('YOUR-PRODUCTIQ-APP');
+
+      if (!valid) {
+        frame.hidden = true;
+        message.hidden = false;
+        return;
+      }
+
+      frame.src = url.replace(/\/$/, '');
+    })();
+  </script>
+</body>
+</html>
