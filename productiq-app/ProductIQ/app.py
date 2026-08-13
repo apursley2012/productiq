@@ -22,7 +22,7 @@ from productiq.amazon import (
     submit_captcha,
 )
 from productiq.files import parse_upload, normalize_input_row
-from productiq.intelligence import add_intelligence, enrich_catalog, catalog_summary
+from productiq.intelligence import add_intelligence, enrich_catalog, catalog_summary, research_competitors
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "productiq-development-key-change-me")
@@ -34,6 +34,23 @@ REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 # In-memory job storage is intentional for the free-hosted version.
 # Results are also returned to the browser immediately and stored in localStorage.
 JOBS: dict[str, dict] = {}
+
+PRODUCTIQ_BUILD = "2026-08-13-complete-productiq-workspaces-v2"
+PRODUCTIQ_FEATURES = [
+    "existing Amazon extraction and CAPTCHA workflow",
+    "CSV/XLSX/XLS upload with extended column mapping",
+    "web-discovered competitor research with Google-first search and fallback",
+    "competitor product-page price extraction and match scoring",
+    "market low/average/high and margin calculations",
+    "automatic store category and subcategory assignment",
+    "catalog-only cross-sell recommendations",
+    "catalog-only upsell recommendations",
+    "CSV/XLSX export of research, categories, competitors, cross-sells, and upsells",
+    "Product Library workspace with catalog search/filter/sort",
+    "dedicated Competitor Research workspace with rerun controls",
+    "dedicated Pricing Workspace with editable cost/fee scenarios",
+    "Catalog Intelligence workspace for categories, cross-sells, and upsells",
+]
 
 
 def _get_job(job_id: str) -> dict:
@@ -210,9 +227,62 @@ def article(slug: str):
     return render_template("article.html", article=article_data, slug=slug)
 
 
+@app.get("/library")
+def library():
+    return render_template("library.html")
+
+
+@app.get("/market")
+def market():
+    return render_template("market.html")
+
+
+@app.get("/catalog")
+def catalog():
+    return render_template("catalog.html")
+
+
+@app.get("/pricing")
+def pricing():
+    return render_template("pricing.html")
+
+
+@app.get("/api/catalog")
+def get_catalog():
+    # Browser storage remains the source of truth for the free hosted build.
+    return jsonify({"results": [], "storage": "browser-local"})
+
+
+@app.post("/api/competitors/research")
+def research_competitor_endpoint():
+    payload = request.get_json(silent=True) or {}
+    result = payload.get("result") or {}
+    source = result.get("sourceInput") or payload.get("source") or {}
+    if not result:
+        return jsonify({"error": "A product result is required."}), 400
+    try:
+        competitors = research_competitors(result, source)
+        return jsonify({"competitors": competitors})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.get("/health")
 def health():
     return jsonify({"ok": True, "service": "ProductIQ", "maxBatch": MAX_BATCH})
+
+
+
+
+@app.get("/api/features")
+def feature_manifest():
+    return jsonify({
+        "ok": True,
+        "service": "ProductIQ",
+        "build": PRODUCTIQ_BUILD,
+        "features": PRODUCTIQ_FEATURES,
+        "maxBatch": MAX_BATCH,
+    })
 
 
 @app.get("/api/sample")
