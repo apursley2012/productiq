@@ -35,7 +35,7 @@ REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 # Results are also returned to the browser immediately and stored in localStorage.
 JOBS: dict[str, dict] = {}
 
-PRODUCTIQ_BUILD = "2026-08-13-complete-productiq-workspaces-v2"
+PRODUCTIQ_BUILD = "2026-08-13-productiq-functional-v3"
 PRODUCTIQ_FEATURES = [
     "existing Amazon extraction and CAPTCHA workflow",
     "CSV/XLSX/XLS upload with extended column mapping",
