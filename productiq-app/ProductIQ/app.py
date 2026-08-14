@@ -35,9 +35,9 @@ REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 # Results are also returned to the browser immediately and stored in localStorage.
 JOBS: dict[str, dict] = {}
 
-PRODUCTIQ_BUILD = "2026-08-13-productiq-functional-v3"
+PRODUCTIQ_BUILD = "2026-08-13-productiq-functional-v4-captcha-newtab"
 PRODUCTIQ_FEATURES = [
-    "existing Amazon extraction and CAPTCHA workflow",
+    "existing Amazon extraction with same-session new-tab CAPTCHA verification",
     "CSV/XLSX/XLS upload with extended column mapping",
     "web-discovered competitor research with Google-first search and fallback",
     "competitor product-page price extraction and match scoring",
@@ -368,7 +368,9 @@ def process_next(job_id: str):
             "processed": job["nextIndex"],
             "total": len(job["items"]),
             "message": str(exc),
-            "captchaImage": f"/api/jobs/{job_id}/captcha-image?ts={int(time.time())}",
+            "captchaImage": str(exc.challenge.get("imageUrl") or ""),
+            "captchaImageProxy": f"/api/jobs/{job_id}/captcha-image?ts={int(time.time())}",
+            "verificationUrl": f"/verify/{job_id}",
         })
     except AmazonResearchError as exc:
         result = {
@@ -416,6 +418,23 @@ def get_job(job_id: str):
         return jsonify({"error": "This job expired."}), 404
 
 
+@app.get("/verify/<job_id>")
+def verify_amazon(job_id: str):
+    try:
+        job = _get_job(job_id)
+    except KeyError:
+        return render_template("captcha_verify.html", job_id=job_id, image_url="", expired=True), 404
+    challenge = job.get("captcha") or {}
+    return render_template(
+        "captcha_verify.html",
+        job_id=job_id,
+        image_url=str(challenge.get("imageUrl") or ""),
+        proxy_url=f"/api/jobs/{job_id}/captcha-image?ts={int(time.time())}",
+        page_url=str(challenge.get("pageUrl") or ""),
+        expired=False,
+    )
+
+
 @app.get("/api/jobs/<job_id>/captcha-image")
 def captcha_image(job_id: str):
     try:
@@ -458,7 +477,9 @@ def solve_captcha(job_id: str):
         return jsonify({
             "accepted": False,
             "message": str(exc),
-            "captchaImage": f"/api/jobs/{job_id}/captcha-image?ts={int(time.time())}",
+            "captchaImage": str(exc.challenge.get("imageUrl") or ""),
+            "captchaImageProxy": f"/api/jobs/{job_id}/captcha-image?ts={int(time.time())}",
+            "verificationUrl": f"/verify/{job_id}",
         }), 400
     except AmazonResearchError as exc:
         return jsonify({"accepted": False, "message": str(exc)}), 400
