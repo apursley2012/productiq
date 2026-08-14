@@ -1,0 +1,47 @@
+html,
+body {
+  width: 100%;
+  min-width: 100%;
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #0b1020;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.app-shell {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#productiq-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: #0b1020;
+}
+
+.setup-message {
+  max-width: 720px;
+  margin: 12vh auto 0;
+  padding: 24px;
+  color: #fff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+
+.setup-message code {
+  word-break: break-word;
+}
