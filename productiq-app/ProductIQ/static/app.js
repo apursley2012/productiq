@@ -2,14 +2,15 @@
   'use strict';
 
   const MAX_BATCH = Number(document.body.dataset.maxBatch || 25);
+  const STORAGE_KEY = 'productiq-results-v2';
   const state = {
     queue: [],
     importedRows: [],
     importedColumns: [],
-    results: JSON.parse(localStorage.getItem('productiq-results-v2') || '[]'),
+    results: JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'),
     captchaResolve: null,
     captchaReject: null,
-    captchaImageUrl: '',
+    activeCaptchaJob: null,
     resultSearch: '',
     resultStatus: ''
   };
@@ -21,14 +22,31 @@
 
   function toast(message) {
     const element = $('#toast');
+    if (!element) return;
     element.textContent = message;
     element.classList.remove('hidden');
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => element.classList.add('hidden'), 3200);
+    toast.timer = setTimeout(() => element.classList.add('hidden'), 3500);
+  }
+
+  function identity(result) {
+    const source = result?.sourceInput || {};
+    return String(
+      result?.asin || source.asin || source.sku || source.upc || source.model ||
+      source.url || source.name || result?.url || result?.title || ''
+    ).trim().toLowerCase();
+  }
+
+  function upsertResult(result) {
+    if (!result) return;
+    const id = identity(result);
+    const index = id ? state.results.findIndex(existing => identity(existing) === id) : -1;
+    if (index >= 0) state.results[index] = result;
+    else state.results.unshift(result);
   }
 
   function saveResults() {
-    localStorage.setItem('productiq-results-v2', JSON.stringify(state.results));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.results));
     renderResults();
   }
 
@@ -43,7 +61,7 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Catalog analysis failed.');
       state.results = data.results || state.results;
-      localStorage.setItem('productiq-results-v2', JSON.stringify(state.results));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.results));
       renderResults();
     } catch (error) {
       console.warn('Catalog enrichment skipped:', error);
@@ -53,13 +71,16 @@
   function kind(value) {
     if (/amazon\.|^https?:/i.test(value)) return 'Amazon URL';
     if (/^[A-Z0-9]{10}$/i.test(value)) return 'ASIN';
+    if (/^\d{8,14}$/.test(value.replace(/[\s-]/g, ''))) return 'UPC/EAN';
     return 'Product name';
   }
 
   function queueItem(value) {
     value = value.trim();
-    if (kind(value) === 'Amazon URL') return { url: value, asin: '', name: '' };
-    if (kind(value) === 'ASIN') return { asin: value.toUpperCase(), url: '', name: '' };
+    const type = kind(value);
+    if (type === 'Amazon URL') return { url: value, asin: '', name: '' };
+    if (type === 'ASIN') return { asin: value.toUpperCase(), url: '', name: '' };
+    if (type === 'UPC/EAN') return { upc: value.replace(/[\s-]/g, ''), asin: '', url: '', name: '' };
     return { name: value, asin: '', url: '' };
   }
 
@@ -70,7 +91,10 @@
   function addItems(items) {
     for (const item of items) {
       if (state.queue.length >= MAX_BATCH) break;
-      if (!state.queue.some(existing => label(existing) === label(item))) state.queue.push(item);
+      const id = label(item).trim().toLowerCase();
+      if (!state.queue.some(existing => label(existing).trim().toLowerCase() === id)) {
+        state.queue.push(item);
+      }
     }
     renderQueue();
   }
@@ -83,10 +107,12 @@
         <td>${esc(item.asin ? 'ASIN' : item.url ? 'Amazon URL' : item.upc ? 'UPC/EAN' : item.model ? 'Model' : 'Product name')}</td>
         <td><button class="text-button remove" data-index="${index}" type="button">Remove</button></td>
       </tr>`).join('');
+
     $('#queue-empty').classList.toggle('hidden', state.queue.length > 0);
     $('#queue-wrap').classList.toggle('hidden', !state.queue.length);
     $('#queue-count').textContent = `${state.queue.length} product${state.queue.length === 1 ? '' : 's'}`;
     $('#run-research').disabled = !state.queue.length;
+
     document.querySelectorAll('.remove').forEach(button => {
       button.onclick = () => {
         state.queue.splice(Number(button.dataset.index), 1);
@@ -131,7 +157,11 @@
   async function loadSampleProducts(trigger) {
     const button = trigger;
     const originalText = button?.textContent || '';
-    if (button) { button.disabled = true; button.textContent = 'Loading…'; }
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Loading…';
+    }
+
     try {
       let items = embeddedSampleProducts();
       if (!items.length) {
@@ -141,19 +171,27 @@
         if (!response.ok) throw new Error(data.error || 'Could not load the sample data.');
         items = data.items || [];
       }
+
+      items = items.slice(0, MAX_BATCH);
       if (!items.length) throw new Error('The included sample data is empty.');
+
       const before = state.queue.length;
       addItems(items);
       const added = state.queue.length - before;
       const skipped = items.length - added;
+
       toast(added
-        ? `${added} sample product${added === 1 ? '' : 's'} added to the queue${skipped ? ` (${skipped} already queued or over the batch limit)` : ''}.`
+        ? `${added} sample product${added === 1 ? '' : 's'} added${skipped ? ` (${skipped} already queued or over the batch limit)` : ''}.`
         : 'The sample products are already in the queue.');
+
       $('#research').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (error) {
       toast(error.message);
     } finally {
-      if (button) { button.disabled = false; button.textContent = originalText; }
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
     }
   }
 
@@ -163,33 +201,38 @@
   $('#file-input').onchange = async event => {
     const file = event.target.files[0];
     if (!file) return;
+
     $('#file-label').textContent = file.name;
     const form = new FormData();
     form.append('file', file);
     $('#upload-message').textContent = 'Reading spreadsheet…';
     $('#upload-message').classList.remove('hidden');
+
     try {
       const response = await fetch('/api/import', { method: 'POST', body: form });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
+
       state.importedRows = data.rows;
       state.importedColumns = data.columns;
+
       fillSelect('#map-asin', guess(data.columns, [/^asin$/i, /amazon.*id/i]));
       fillSelect('#map-url', guess(data.columns, [/url/i, /link/i]));
-      fillSelect('#map-name', guess(data.columns, [/product.*name/i, /title/i, /^name$/i]));
-      fillSelect('#map-sku', guess(data.columns, [/^sku$/i, /item.*sku/i]));
-      fillSelect('#map-upc', guess(data.columns, [/^upc$/i, /^ean$/i, /gtin/i]));
+      fillSelect('#map-name', guess(data.columns, [/product.*name/i, /title/i, /^name$/i, /description/i]));
+      fillSelect('#map-sku', guess(data.columns, [/^sku$/i, /item.*sku/i, /seller.*sku/i]));
+      fillSelect('#map-upc', guess(data.columns, [/^upc$/i, /^ean$/i, /gtin/i, /barcode/i]));
       fillSelect('#map-model', guess(data.columns, [/model/i, /mpn/i, /part.*number/i]));
       fillSelect('#map-brand', guess(data.columns, [/brand/i, /manufacturer/i]));
       fillSelect('#map-cost', guess(data.columns, [/cost/i, /purchase.*price/i, /price.*paid/i]));
-      fillSelect('#map-quantity', guess(data.columns, [/quantity/i, /^qty$/i, /stock/i]));
+      fillSelect('#map-quantity', guess(data.columns, [/quantity/i, /^qty$/i, /stock/i, /on.*hand/i]));
       fillSelect('#map-shipping-cost', guess(data.columns, [/shipping.*cost/i, /inbound.*shipping/i]));
       fillSelect('#map-fees', guess(data.columns, [/fixed.*fee/i, /^fees?$/i]));
       fillSelect('#map-fee-rate', guess(data.columns, [/fee.*rate/i, /fee.*%/i]));
-      fillSelect('#map-category', guess(data.columns, [/^category$/i]));
-      fillSelect('#map-subcategory', guess(data.columns, [/sub.*category/i]));
+      fillSelect('#map-category', guess(data.columns, [/^category$/i, /department/i]));
+      fillSelect('#map-subcategory', guess(data.columns, [/sub.*category/i, /product.*type/i]));
       fillSelect('#map-condition', guess(data.columns, [/condition/i]));
-      fillSelect('#map-pack-count', guess(data.columns, [/pack.*count/i, /^count$/i]));
+      fillSelect('#map-pack-count', guess(data.columns, [/pack.*count/i, /units.*pack/i, /^count$/i]));
+
       $('#mapping').classList.remove('hidden');
       $('#upload-message').textContent = `Loaded ${data.count} rows. Confirm the column mapping.`;
     } catch (error) {
@@ -201,113 +244,104 @@
     const asinColumn = $('#map-asin').value;
     const urlColumn = $('#map-url').value;
     const nameColumn = $('#map-name').value;
-    const skuColumn = $('#map-sku').value, upcColumn = $('#map-upc').value, modelColumn = $('#map-model').value;
-    const brandColumn = $('#map-brand').value, costColumn = $('#map-cost').value, quantityColumn = $('#map-quantity').value;
-    const shippingColumn=$('#map-shipping-cost').value, feesColumn=$('#map-fees').value, feeRateColumn=$('#map-fee-rate').value;
-    const categoryColumn=$('#map-category').value, subcategoryColumn=$('#map-subcategory').value, conditionColumn=$('#map-condition').value, packCountColumn=$('#map-pack-count').value;
-    if (!asinColumn && !urlColumn && !nameColumn && !upcColumn && !modelColumn) return toast('Map at least one product identifier or name column.');
+    const skuColumn = $('#map-sku').value;
+    const upcColumn = $('#map-upc').value;
+    const modelColumn = $('#map-model').value;
+    const brandColumn = $('#map-brand').value;
+    const costColumn = $('#map-cost').value;
+    const quantityColumn = $('#map-quantity').value;
+    const shippingColumn = $('#map-shipping-cost').value;
+    const feesColumn = $('#map-fees').value;
+    const feeRateColumn = $('#map-fee-rate').value;
+    const categoryColumn = $('#map-category').value;
+    const subcategoryColumn = $('#map-subcategory').value;
+    const conditionColumn = $('#map-condition').value;
+    const packCountColumn = $('#map-pack-count').value;
+
+    if (!asinColumn && !urlColumn && !nameColumn && !upcColumn && !modelColumn) {
+      return toast('Map at least one product identifier or name column.');
+    }
+
     const items = state.importedRows.map(row => ({
       asin: asinColumn ? String(row[asinColumn] || '').trim() : '',
       url: urlColumn ? String(row[urlColumn] || '').trim() : '',
       name: nameColumn ? String(row[nameColumn] || '').trim() : '',
-      sku: skuColumn ? String(row[skuColumn] || '').trim() : '', upc: upcColumn ? String(row[upcColumn] || '').trim() : '',
-      model: modelColumn ? String(row[modelColumn] || '').trim() : '', brand: brandColumn ? String(row[brandColumn] || '').trim() : '',
-      cost: costColumn ? String(row[costColumn] || '').trim() : '', quantity: quantityColumn ? String(row[quantityColumn] || '').trim() : '',
-      shipping_cost: shippingColumn ? String(row[shippingColumn] || '').trim() : '', fees: feesColumn ? String(row[feesColumn] || '').trim() : '',
-      fee_rate: feeRateColumn ? String(row[feeRateColumn] || '').trim() : '', category: categoryColumn ? String(row[categoryColumn] || '').trim() : '',
-      subcategory: subcategoryColumn ? String(row[subcategoryColumn] || '').trim() : '', condition: conditionColumn ? String(row[conditionColumn] || '').trim() : '',
+      sku: skuColumn ? String(row[skuColumn] || '').trim() : '',
+      upc: upcColumn ? String(row[upcColumn] || '').trim() : '',
+      model: modelColumn ? String(row[modelColumn] || '').trim() : '',
+      brand: brandColumn ? String(row[brandColumn] || '').trim() : '',
+      cost: costColumn ? String(row[costColumn] || '').trim() : '',
+      quantity: quantityColumn ? String(row[quantityColumn] || '').trim() : '',
+      shipping_cost: shippingColumn ? String(row[shippingColumn] || '').trim() : '',
+      fees: feesColumn ? String(row[feesColumn] || '').trim() : '',
+      fee_rate: feeRateColumn ? String(row[feeRateColumn] || '').trim() : '',
+      category: categoryColumn ? String(row[categoryColumn] || '').trim() : '',
+      subcategory: subcategoryColumn ? String(row[subcategoryColumn] || '').trim() : '',
+      condition: conditionColumn ? String(row[conditionColumn] || '').trim() : '',
       pack_count: packCountColumn ? String(row[packCountColumn] || '').trim() : ''
     })).filter(item => item.asin || item.url || item.name || item.upc || item.model);
+
     addItems(items);
     toast(`${Math.min(items.length, MAX_BATCH)} imported rows added.`);
   };
 
-  let activeCaptchaJob = null;
-
-  function setCaptchaImage(url) {
-    const image = $('#captcha-image');
-    const loading = $('#captcha-loading');
-    const error = $('#captcha-image-error');
-    state.captchaImageUrl = url || '';
-    image.hidden = true;
-    error.classList.add('hidden');
-    loading.classList.remove('hidden');
-    if (!url) {
-      loading.classList.add('hidden');
-      error.classList.remove('hidden');
-      return;
+  async function waitForCaptcha(jobId) {
+    while (state.activeCaptchaJob === jobId && state.captchaResolve) {
+      await new Promise(resolve => setTimeout(resolve, 1600));
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`, { cache: 'no-store' });
+        const data = await response.json();
+        if (response.ok && data.status !== 'captcha_required') {
+          $('#captcha-dialog').close();
+          const resolve = state.captchaResolve;
+          state.captchaResolve = null;
+          state.captchaReject = null;
+          state.activeCaptchaJob = null;
+          resolve?.();
+          return;
+        }
+      } catch (_) {}
     }
-    image.onload = () => {
-      loading.classList.add('hidden');
-      error.classList.add('hidden');
-      image.hidden = false;
-      $('#captcha-answer').focus();
-    };
-    image.onerror = () => {
-      loading.classList.add('hidden');
-      image.hidden = true;
-      error.classList.remove('hidden');
-    };
-    const separator = url.includes('?') ? '&' : '?';
-    image.src = `${url}${separator}reload=${Date.now()}`;
   }
 
   async function requestCaptchaAnswer(jobId, data) {
-    activeCaptchaJob = jobId;
-    $('#captcha-message').textContent = data.message || 'Amazon requires human verification.';
-    $('#captcha-answer').value = '';
-    setCaptchaImage(data.captchaImage);
+    state.activeCaptchaJob = jobId;
+
+    if (data.partialResult) {
+      upsertResult(data.partialResult);
+      saveResults();
+    }
+
+    $('#captcha-message').textContent =
+      data.message || 'Amazon paused this product for human verification.';
+
+    const link = $('#captcha-open');
+    link.href = data.verificationUrl || `/verify/${jobId}`;
     $('#captcha-dialog').showModal();
+
     return new Promise((resolve, reject) => {
       state.captchaResolve = resolve;
       state.captchaReject = reject;
+      waitForCaptcha(jobId);
     });
   }
 
-  $('#captcha-reload').onclick = () => setCaptchaImage(state.captchaImageUrl);
-
-  $('#captcha-form').onsubmit = async event => {
-    event.preventDefault();
-    const answer = $('#captcha-answer').value.trim();
-    if (!answer) return;
-    const submitButton = $('#captcha-form button[type="submit"]');
-    submitButton.disabled = true;
-    submitButton.textContent = 'Checking…';
-    try {
-      const response = await fetch(`/api/jobs/${activeCaptchaJob}/captcha`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer })
-      });
-      const data = await response.json();
-      if (!response.ok || !data.accepted) {
-        $('#captcha-message').textContent = data.message || data.error || 'That answer was not accepted.';
-        if (data.captchaImage) setCaptchaImage(data.captchaImage);
-        $('#captcha-answer').value = '';
-        return;
-      }
-      $('#captcha-dialog').close();
-      state.captchaResolve?.();
-      state.captchaResolve = null;
-      state.captchaReject = null;
-    } finally {
-      submitButton.disabled = false;
-      submitButton.textContent = 'Submit and continue';
-    }
-  };
-
   $('#captcha-cancel').onclick = () => {
     $('#captcha-dialog').close();
-    state.captchaReject?.(new Error('Research stopped at the CAPTCHA checkpoint.'));
+    const reject = state.captchaReject;
     state.captchaResolve = null;
     state.captchaReject = null;
+    state.activeCaptchaJob = null;
+    reject?.(new Error('Research stopped at the Amazon verification checkpoint.'));
   };
 
   $('#run-research').onclick = async () => {
     if (!state.queue.length) return;
+
     $('#run-research').disabled = true;
     $('#progress-section').classList.remove('hidden');
     $('#progress-section').scrollIntoView({ behavior: 'smooth' });
+
     try {
       let response = await fetch('/api/jobs', {
         method: 'POST',
@@ -316,26 +350,43 @@
       });
       let data = await response.json();
       if (!response.ok) throw new Error(data.error);
+
       const id = data.jobId;
       const total = data.count;
       let completed = 0;
+
       while (completed < total) {
         setProgress(completed, total, `Researching ${label(state.queue[completed])}`);
+
         response = await fetch(`/api/jobs/${id}/next`, { method: 'POST' });
         data = await response.json();
         if (!response.ok) throw new Error(data.error);
+
         if (data.captchaRequired) {
-          setProgress(completed, total, 'Amazon requires a CAPTCHA. Complete it to resume this same session.');
+          setProgress(
+            completed,
+            total,
+            'Amazon needs verification. Open the verification tab, complete it, then come back here.'
+          );
           await requestCaptchaAnswer(id, data);
           continue;
         }
-        state.results.unshift(data.result);
-        saveResults();
+
+        if (data.result) {
+          upsertResult(data.result);
+          saveResults();
+        }
         completed = data.processed;
       }
-      setProgress(total, total, 'Research complete. Categorizing the catalog and building cross-sell / upsell suggestions…');
+
+      setProgress(
+        total,
+        total,
+        'Research complete. Updating categories and catalog relationships…'
+      );
       await enrichCatalog();
       setProgress(total, total, 'Research complete. Review the results below.');
+
       state.queue = [];
       renderQueue();
       $('#results').scrollIntoView({ behavior: 'smooth' });
@@ -359,40 +410,79 @@
     $('#metric-complete').textContent = state.results.filter(item => item.status === 'Complete').length;
     $('#metric-review').textContent = state.results.filter(item => item.status === 'Needs review').length;
     $('#metric-error').textContent = state.results.filter(item => item.status === 'Error').length;
-    $('#metric-competitors').textContent = state.results.reduce((n,item)=>n+(item.competitors?.length||0),0);
-    const margins=state.results.map(x=>x.pricing?.estimatedMargin).filter(x=>Number.isFinite(x));
-    $('#metric-margin').textContent = margins.length ? `${(margins.reduce((a,b)=>a+b,0)/margins.length).toFixed(1)}%` : '—';
+    $('#metric-competitors').textContent = state.results.reduce(
+      (count, item) => count + (item.competitors?.length || 0), 0
+    );
+    const margins = state.results
+      .map(item => item.pricing?.estimatedMargin)
+      .filter(value => Number.isFinite(value));
+    $('#metric-margin').textContent = margins.length
+      ? `${(margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1)}%`
+      : '—';
   }
 
   function filteredResults() {
     const query = state.resultSearch.trim().toLowerCase();
     return state.results.filter(result => {
       const matchesStatus = !state.resultStatus || result.status === state.resultStatus;
-      const haystack = [result.title, result.asin, result.brand, result.status, result.seller, result.price, result.catalogCategory?.category, result.catalogCategory?.subcategory]
-        .filter(Boolean).join(' ').toLowerCase();
+      const haystack = [
+        result.title, result.asin, result.brand, result.status, result.seller,
+        result.price, result.sourceInput?.upc, result.sourceInput?.model,
+        result.catalogCategory?.category, result.catalogCategory?.subcategory
+      ].filter(Boolean).join(' ').toLowerCase();
       return matchesStatus && (!query || haystack.includes(query));
     });
   }
 
+  function competitorDiagnostics(result) {
+    const info = result.competitorResearch || {};
+    if (result.competitors?.length) return '';
+    if (!info.queriesTried?.length && !info.message) return '';
+    const providers = Object.entries(info.providers || {})
+      .map(([name, status]) => `${name}: ${status}`)
+      .join(' · ');
+    return `<details>
+      <summary>Competitor search details</summary>
+      ${info.message ? `<p>${esc(info.message)}</p>` : ''}
+      ${info.queriesTried?.length ? `<p><strong>Queries tried:</strong> ${info.queriesTried.map(esc).join(' · ')}</p>` : ''}
+      ${providers ? `<p><strong>Search providers:</strong> ${esc(providers)}</p>` : ''}
+    </details>`;
+  }
+
   function renderResults() {
     renderMetrics();
+
     const list = $('#results-list');
     const visible = filteredResults();
     $('#results-empty').classList.toggle('hidden', visible.length > 0);
-    $('#results-empty').textContent = state.results.length ? 'No saved results match these filters.' : 'Completed products will appear here.';
+    $('#results-empty').textContent = state.results.length
+      ? 'No saved results match these filters.'
+      : 'Completed products will appear here.';
+
     $('#export-xlsx').disabled = !state.results.length;
     $('#export-csv').disabled = !state.results.length;
     $('#retry-incomplete').disabled = !state.results.some(result => result.status !== 'Complete');
+
     list.innerHTML = visible.map(result => {
       const index = state.results.indexOf(result);
+      const category = result.catalogCategory || {};
+      const pricing = result.pricing || {};
       return `<article class="card result-card">
         <div class="result-image">${result.images?.[0] ? `<img src="${esc(result.images[0])}" alt="">` : 'No image available'}</div>
         <div>
           <div class="result-top">
-            <div><p class="eyebrow">${esc(result.asin || 'Amazon product')}</p><h3>${esc(result.title || 'Product research failed')}</h3></div>
-            <span class="status ${esc((result.status || '').toLowerCase().replace(/\s/g, '-'))}">${esc(result.status || 'Unknown')}</span>
+            <div>
+              <p class="eyebrow">${esc(result.asin || result.sourceInput?.upc || result.sourceInput?.model || 'Inventory product')}</p>
+              <h3>${esc(result.title || 'Product research result')}</h3>
+            </div>
+            <span class="status ${esc((result.status || '').toLowerCase().replace(/\s/g, '-'))}">
+              ${esc(result.status || 'Unknown')}
+            </span>
           </div>
+
           ${result.error ? `<p class="error-message">${esc(result.error)}</p>` : ''}
+          ${result.intelligenceError ? `<p class="notice">Market research warning: ${esc(result.intelligenceError)}</p>` : ''}
+
           <div class="meta">
             ${result.price ? `<span>${esc(result.price)}</span>` : ''}
             ${result.brand ? `<span>${esc(result.brand)}</span>` : ''}
@@ -400,28 +490,70 @@
             ${result.reviewCount ? `<span>${esc(result.reviewCount)}</span>` : ''}
             ${result.availability ? `<span>${esc(result.availability)}</span>` : ''}
           </div>
-          ${result.catalogCategory ? `<p class="catalog-path"><strong>${esc(result.catalogCategory.category || '')}</strong>${result.catalogCategory.subcategory ? ` <span>›</span> ${esc(result.catalogCategory.subcategory)}` : ''}</p>` : ''}
-          ${result.url ? `<p><a href="${esc(result.url)}" target="_blank" rel="noopener">Open Amazon listing</a></p>` : ''}
-          ${result.pricing ? `<div class="intelligence-grid">
-            <span><small>Input cost</small><b>${result.pricing.cost != null ? '$'+Number(result.pricing.cost).toFixed(2) : '—'}</b></span>
-            <span><small>Market average</small><b>${result.pricing.marketAverage != null ? '$'+Number(result.pricing.marketAverage).toFixed(2) : '—'}</b></span>
-            <span><small>Suggested price</small><b>${result.pricing.suggestedPrice != null ? '$'+Number(result.pricing.suggestedPrice).toFixed(2) : '—'}</b></span>
-            <span><small>Est. margin</small><b>${result.pricing.estimatedMargin != null ? result.pricing.estimatedMargin+'%' : '—'}</b></span>
-          </div>` : ''}
-          ${result.competitors?.length ? `<details><summary>Competitor research (${result.competitors.length})</summary><div class="competitor-list">${result.competitors.map(c=>`<p><strong>${esc(c.retailer)}</strong>${c.domain ? ` <small>${esc(c.domain)}</small>` : ''} ${c.price ? ' · $'+Number(c.price).toFixed(2) : ''} · ${esc(c.matchConfidence||'')}${Number.isFinite(c.matchScore) ? ` (${c.matchScore}%)` : ''}${c.matchReason ? ` · ${esc(c.matchReason)}` : ''} ${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">View listing</a>`:''}</p>`).join('')}</div></details>` : ''}
-          ${result.crossSells?.length ? `<details><summary>Cross-sell ideas from this catalog (${result.crossSells.length})</summary><div class="recommendation-list">${result.crossSells.map(x=>`<div class="recommendation-row">${x.image ? `<img src="${esc(x.image)}" alt="">` : ''}<span><strong>${esc(x.title)}</strong><small>${esc(x.reason || '')}${x.price != null ? ` · $${Number(x.price).toFixed(2)}` : ''}</small></span></div>`).join('')}</div></details>` : ''}
-          ${result.upsells?.length ? `<details><summary>Upsell ideas from this catalog (${result.upsells.length})</summary><div class="recommendation-list">${result.upsells.map(x=>`<div class="recommendation-row">${x.image ? `<img src="${esc(x.image)}" alt="">` : ''}<span><strong>${esc(x.title)}</strong><small>${esc(x.reason || '')}${x.price != null ? ` · $${Number(x.price).toFixed(2)}` : ''}</small></span></div>`).join('')}</div></details>` : ''}
+
+          ${category.category ? `<p class="catalog-path">
+            <strong>${esc(category.category)}</strong>
+            ${category.subcategory ? ` <span>›</span> ${esc(category.subcategory)}` : ''}
+            ${category.confidence != null ? ` <small>(${esc(category.confidence)}% category confidence)</small>` : ''}
+          </p>` : ''}
+
+          ${result.url ? `<p><a href="${esc(result.url)}" target="_blank" rel="noopener">Open product listing</a></p>` : ''}
+
+          <div class="intelligence-grid">
+            <span><small>Input cost</small><b>${pricing.cost != null ? '$' + Number(pricing.cost).toFixed(2) : '—'}</b></span>
+            <span><small>Market average</small><b>${pricing.marketAverage != null ? '$' + Number(pricing.marketAverage).toFixed(2) : '—'}</b></span>
+            <span><small>Suggested price</small><b>${pricing.suggestedPrice != null ? '$' + Number(pricing.suggestedPrice).toFixed(2) : '—'}</b></span>
+            <span><small>Est. margin</small><b>${pricing.estimatedMargin != null ? pricing.estimatedMargin + '%' : '—'}</b></span>
+          </div>
+
+          ${result.competitors?.length ? `<details>
+            <summary>Competitor research (${result.competitors.length})</summary>
+            <div class="competitor-list">${result.competitors.map(candidate => `
+              <p>
+                <strong>${esc(candidate.retailer)}</strong>
+                ${candidate.domain ? ` <small>${esc(candidate.domain)}</small>` : ''}
+                ${candidate.price != null ? ` · $${Number(candidate.price).toFixed(2)}` : ' · price unavailable'}
+                · ${esc(candidate.matchConfidence || '')}
+                ${Number.isFinite(candidate.matchScore) ? ` (${candidate.matchScore}%)` : ''}
+                ${candidate.matchReason ? ` · ${esc(candidate.matchReason)}` : ''}
+                ${candidate.url ? ` <a href="${esc(candidate.url)}" target="_blank" rel="noopener">View listing</a>` : ''}
+              </p>`).join('')}
+            </div>
+          </details>` : competitorDiagnostics(result)}
+
+          ${result.crossSells?.length ? `<details>
+            <summary>Cross-sells from this catalog (${result.crossSells.length})</summary>
+            <div class="recommendation-list">${result.crossSells.map(item => `
+              <div class="recommendation-row">
+                ${item.image ? `<img src="${esc(item.image)}" alt="">` : ''}
+                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` · $${Number(item.price).toFixed(2)}` : ''}</small></span>
+              </div>`).join('')}
+            </div>
+          </details>` : ''}
+
+          ${result.upsells?.length ? `<details>
+            <summary>Upsells from this catalog (${result.upsells.length})</summary>
+            <div class="recommendation-list">${result.upsells.map(item => `
+              <div class="recommendation-row">
+                ${item.image ? `<img src="${esc(item.image)}" alt="">` : ''}
+                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` · $${Number(item.price).toFixed(2)}` : ''}</small></span>
+              </div>`).join('')}
+            </div>
+          </details>` : ''}
+
           <details>
             <summary>Extracted listing details</summary>
             ${result.bullets?.length ? `<h4>Bullet points</h4><ul>${result.bullets.map(value => `<li>${esc(value)}</li>`).join('')}</ul>` : ''}
             ${result.description ? `<h4>Description</h4><p>${esc(result.description)}</p>` : ''}
-            ${result.categories?.length ? `<h4>Category</h4><p>${esc(result.categories.join(' > '))}</p>` : ''}
+            ${result.categories?.length ? `<h4>Marketplace category</h4><p>${esc(result.categories.join(' > '))}</p>` : ''}
             ${result.details && Object.keys(result.details).length ? `<h4>Technical details</h4><ul>${Object.entries(result.details).map(([key, value]) => `<li><strong>${esc(key)}:</strong> ${esc(value)}</li>`).join('')}</ul>` : ''}
           </details>
+
           <button class="text-button delete-result" data-index="${index}" type="button">Delete result</button>
         </div>
       </article>`;
     }).join('');
+
     document.querySelectorAll('.delete-result').forEach(button => {
       button.onclick = () => {
         state.results.splice(Number(button.dataset.index), 1);
@@ -430,18 +562,33 @@
     });
   }
 
-  $('#result-search').oninput = event => { state.resultSearch = event.target.value; renderResults(); };
-  $('#result-status').onchange = event => { state.resultStatus = event.target.value; renderResults(); };
+  $('#result-search').oninput = event => {
+    state.resultSearch = event.target.value;
+    renderResults();
+  };
+
+  $('#result-status').onchange = event => {
+    state.resultStatus = event.target.value;
+    renderResults();
+  };
 
   $('#retry-incomplete').onclick = () => {
     const retryItems = state.results
       .filter(result => result.status !== 'Complete')
-      .map(result => result.sourceInput || { asin: result.asin || '', url: result.url || '', name: result.title || '' })
-      .filter(item => item.asin || item.url || item.name);
+      .map(result => result.sourceInput || {
+        asin: result.asin || '',
+        url: result.url || '',
+        name: result.title || ''
+      })
+      .filter(item => item.asin || item.url || item.name || item.upc || item.model);
+
     const before = state.queue.length;
     addItems(retryItems);
     const added = state.queue.length - before;
-    toast(added ? `${added} incomplete product${added === 1 ? '' : 's'} requeued.` : 'No additional products could be added to the current queue.');
+    toast(added
+      ? `${added} incomplete product${added === 1 ? '' : 's'} requeued.`
+      : 'No additional products could be added to the current queue.');
+
     if (added) $('#research').scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -458,14 +605,16 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ results: state.results })
     });
+
     if (!response.ok) {
       const data = await response.json();
       return toast(data.error);
     }
+
     const blob = await response.blob();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `productiq-amazon-research.${format}`;
+    link.download = `productiq-research.${format}`;
     link.click();
     URL.revokeObjectURL(link.href);
   }
