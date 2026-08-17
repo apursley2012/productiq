@@ -1,1 +1,1 @@
-# productiq
+# ProductIQ
