@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="ProductIQ researches Amazon products from ASINs, URLs, names, CSV files, and Excel workbooks.">
+  <meta name="description" content="ProductIQ researches products from spreadsheets, Amazon identifiers, UPC/EAN codes, model numbers, and product names.">
   <meta name="theme-color" content="#0F172A">
-  <title>ProductIQ | Amazon Product Research</title>
+  <title>ProductIQ | Product Research & Inventory Intelligence</title>
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='assets/productiq-icon.PNG') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='assets/productiq-icon.PNG') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=12">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=16">
   <script id="sample-products-data" type="application/json">{{ sample_items | tojson }}</script>
-  <script defer src="{{ url_for('static', filename='app.js') }}?v=12"></script>
+  <script defer src="{{ url_for('static', filename='app.js') }}?v=16"></script>
 </head>
 <body data-max-batch="{{ max_batch }}" data-sample-url="{{ url_for('load_sample_products') }}">
   <header class="site-header">
@@ -31,7 +31,7 @@
         </div>
         <p class="eyebrow">Product research & inventory intelligence</p>
         <h1>Research, compare, price, and organize products from one spreadsheet.</h1>
-        <p>Upload a spreadsheet or paste Amazon ASINs, URLs, and product names. ProductIQ retrieves available listing details, researches competitor listings, compares market pricing, calculates margins from your cost data, organizes inventory insights, and exports the completed dataset.</p>
+        <p>Upload a spreadsheet or paste product identifiers. ProductIQ uses the strongest information you have, including ASIN, URL, UPC/EAN, model number, brand, and product name, then keeps the original inventory data attached to the research.</p>
         <div class="button-row hero-actions">
           <a class="button primary hero-button" href="#research">Start product research</a>
           <button id="hero-load-sample" class="button secondary" type="button">Try 25 sample products</button>
@@ -57,7 +57,7 @@
     <section class="section-shell feature-workspaces">
       <div class="section-heading"><div><p class="eyebrow">ProductIQ workspaces</p><h2>Use the research after it is collected</h2></div><p>Saved research is shared between these workspaces in this browser.</p></div>
       <div class="workspace-card-grid">
-        <a class="card workspace-card" href="{{ url_for('library') }}"><span>Inventory</span><h3>Product Library</h3><p>Search, filter, sort, and inspect the complete researched catalog.</p></a>
+        <a class="card workspace-card" href="{{ url_for('library') }}"><span>Inventory</span><h3>Product Library</h3><p>Search, filter, sort, and inspect the saved catalog.</p></a>
         <a class="card workspace-card" href="{{ url_for('market') }}"><span>Market</span><h3>Competitor Research</h3><p>Compare discovered retailers, prices, and product-match confidence.</p></a>
         <a class="card workspace-card" href="{{ url_for('pricing') }}"><span>Margins</span><h3>Pricing Workspace</h3><p>Review market ranges, break-even, competitive, suggested, and premium scenarios.</p></a>
         <a class="card workspace-card" href="{{ url_for('catalog') }}"><span>Merchandising</span><h3>Catalog Intelligence</h3><p>Review categories, subcategories, cross-sells, and upsells using your own inventory.</p></a>
@@ -65,22 +65,24 @@
     </section>
 
     <section id="research" class="workspace section-shell">
-      <div class="section-heading"><div><p class="eyebrow">Research queue</p><h2>Add products</h2></div><p>Up to {{ max_batch }} products per batch on the free hosted version.</p></div>
+      <div class="section-heading"><div><p class="eyebrow">Research queue</p><h2>Add products</h2></div><p>Up to {{ max_batch }} products per batch on the hosted version.</p></div>
       <div class="input-grid">
         <article class="card">
           <h3>Paste products</h3>
-          <p>Enter one ASIN, Amazon URL, or product name per line.</p>
-          <textarea id="product-input" rows="11" placeholder="B0XXXXXXXXX&#10;https://www.amazon.com/dp/B0XXXXXXXXX&#10;Adjustable laptop stand"></textarea>
+          <p>Enter one ASIN, Amazon URL, UPC/EAN, or product name per line.</p>
+          <textarea id="product-input" rows="11" placeholder="B0XXXXXXXXX&#10;https://www.amazon.com/dp/B0XXXXXXXXX&#10;012345678905&#10;Adjustable laptop stand"></textarea>
           <button id="add-lines" class="button secondary" type="button">Add to queue</button>
         </article>
+
         <article class="card">
           <h3>Upload spreadsheet</h3>
-          <p>Upload CSV, XLSX, or XLS containing product identifiers, names, costs, quantities, or existing inventory data.</p>
-          <label class="dropzone" for="file-input"><strong>Choose CSV or XLSX</strong><span id="file-label">No file selected</span><input id="file-input" type="file" accept=".csv,.xlsx,.xls"></label>
+          <p>Upload CSV, XLSX, or XLS containing product identifiers, names, costs, quantities, categories, or other inventory data.</p>
+          <label class="dropzone" for="file-input"><strong>Choose CSV or Excel file</strong><span id="file-label">No file selected</span><input id="file-input" type="file" accept=".csv,.xlsx,.xls"></label>
           <div class="sample-data-row">
-            <span>Want to try ProductIQ first? Load 25 real Amazon listings.</span>
+            <span>Want to try ProductIQ first? Load all 25 included sample products.</span>
             <button id="load-sample" class="button secondary compact-button" type="button">Load 25 sample products</button>
           </div>
+
           <div id="mapping" class="mapping hidden">
             <label>ASIN column<select id="map-asin"></select></label>
             <label>URL column<select id="map-url"></select></label>
@@ -108,7 +110,7 @@
         <div class="card-heading"><div><h3>Products ready to research</h3><p id="queue-count">0 products</p></div><button id="clear-queue" class="text-button" type="button">Clear queue</button></div>
         <div id="queue-empty" class="empty">Your queue is empty.</div>
         <div id="queue-wrap" class="table-wrap hidden"><table><thead><tr><th>Input</th><th>Type</th><th></th></tr></thead><tbody id="queue-body"></tbody></table></div>
-        <div class="run-row"><button id="run-research" class="button primary" type="button" disabled>Research products</button><p id="run-note">If Amazon displays a CAPTCHA, ProductIQ pauses the active Amazon session, keeps its cookies and browser identity, and resumes after you enter the challenge.</p></div>
+        <div class="run-row"><button id="run-research" class="button primary" type="button" disabled>Research products</button><p id="run-note">If Amazon asks for verification, ProductIQ pauses that product and opens a separate verification page without throwing away the rest of the batch.</p></div>
       </article>
     </section>
 
@@ -126,7 +128,7 @@
         <div class="button-row"><button id="export-xlsx" class="button secondary" type="button" disabled>Download Excel</button><button id="export-csv" class="button secondary" type="button" disabled>Download CSV</button></div>
       </div>
       <article class="card results-toolbar">
-        <label>Search results<input id="result-search" type="search" placeholder="Title, ASIN, brand, status…"></label>
+        <label>Search results<input id="result-search" type="search" placeholder="Title, ASIN, UPC, model, brand, status…"></label>
         <label>Status<select id="result-status"><option value="">All statuses</option><option value="Complete">Complete</option><option value="Needs review">Needs review</option><option value="Error">Error</option></select></label>
         <button id="retry-incomplete" class="button secondary" type="button">Requeue incomplete</button>
         <button id="clear-results" class="text-button danger-link" type="button">Clear saved results</button>
@@ -136,36 +138,30 @@
     </section>
 
     <section id="about" class="section-shell about-grid">
-      <article class="card"><p class="eyebrow">What it extracts</p><h2>Listing information</h2><p>ProductIQ attempts to retrieve title, brand, price, availability, rating, reviews, seller, bullets, description, categories, technical details, dimensions, weight, manufacturer, and product images.</p></article>
-      <article class="card"><p class="eyebrow">Important limitation</p><h2>Real pages, real failures</h2><p>Amazon can change its page structure or show CAPTCHAs. ProductIQ reports those failures instead of creating fake data. Smaller batches and slower retries are more dependable.</p></article>
+      <article class="card"><p class="eyebrow">What it researches</p><h2>Product information</h2><p>ProductIQ keeps uploaded identifiers and inventory data, attempts Amazon listing extraction, discovers public competitor listings, calculates pricing scenarios, categorizes the catalog, and builds cross-sell and upsell relationships from inventory you actually carry.</p></article>
+      <article class="card"><p class="eyebrow">When a source fails</p><h2>Do not throw away the product</h2><p>If Amazon or a public search source does not cooperate, ProductIQ keeps the inventory record and shows what could and could not be verified instead of inventing data.</p></article>
     </section>
 
     <section class="section-shell story-links">
-      <a class="story-card" href="{{ url_for('case_study') }}"><span class="story-kicker">Case study</span><h2>How ProductIQ became a product research workspace</h2><p>Read the project goals, architecture, workflow decisions, extraction strategy, and lessons learned.</p><span class="story-arrow">Read case study →</span></a>
-      <a class="story-card" href="{{ url_for('articles') }}"><span class="story-kicker">Articles</span><h2>Behind the research workflow</h2><p>Explore articles about resilient extraction, spreadsheet-first workflows, and structuring marketplace data.</p><span class="story-arrow">Browse articles →</span></a>
+      <a class="story-card" href="{{ url_for('case_study') }}"><span class="story-kicker">Case study</span><h2>Why I built ProductIQ around the product list I already have</h2><p>Read about the research workflow, the problems I was trying to remove, and the decisions behind the app.</p><span class="story-arrow">Read case study →</span></a>
+      <a class="story-card" href="{{ url_for('articles') }}"><span class="story-kicker">Articles</span><h2>Behind the research workflow</h2><p>Read about spreadsheets, product matching, Amazon verification, and why the app keeps outside failures from killing the whole workflow.</p><span class="story-arrow">Browse articles →</span></a>
     </section>
   </main>
 
   <dialog id="captcha-dialog" class="captcha-dialog">
-    <form id="captcha-form" method="dialog">
+    <div class="captcha-newtab-card">
       <div class="captcha-heading">
         <img src="{{ url_for('static', filename='assets/productiq-icon.PNG') }}" alt="">
-        <div><p class="eyebrow">Amazon verification</p><h2>Complete the CAPTCHA to continue</h2></div>
+        <div><p class="eyebrow">Amazon verification</p><h2>Amazon needs you to verify this session</h2></div>
       </div>
-      <p id="captcha-message">Amazon paused this research session for human verification.</p>
-      <div id="captcha-image-wrap" class="captcha-image-wrap" aria-live="polite">
-        <div id="captcha-loading" class="captcha-loading">Loading Amazon’s challenge…</div>
-        <img id="captcha-image" alt="Amazon CAPTCHA challenge" hidden>
-        <div id="captcha-image-error" class="captcha-image-error hidden">
-          <strong>The CAPTCHA image did not load.</strong>
-          <span>Reload it without restarting the current product or research batch.</span>
-        </div>
+      <p id="captcha-message">Amazon paused this product for human verification.</p>
+      <p>Open the verification page in a separate tab. ProductIQ will keep this batch waiting here. When Amazon accepts the answer, come back to this tab and the same product will continue automatically.</p>
+      <div class="button-row">
+        <a id="captcha-open" class="button primary" href="#" target="_blank" rel="noopener">Open Amazon verification</a>
+        <button id="captcha-cancel" class="button secondary" type="button">Stop batch</button>
       </div>
-      <button id="captcha-reload" class="text-button captcha-reload" type="button">Reload CAPTCHA image</button>
-      <label>Characters shown<input id="captcha-answer" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
-      <div class="button-row"><button class="button primary" type="submit">Submit and continue</button><button id="captcha-cancel" class="button secondary" type="button">Stop batch</button></div>
-      <p class="notice">The challenge is loaded and submitted through the same Amazon session that encountered it. ProductIQ does not automatically solve or bypass CAPTCHAs.</p>
-    </form>
+      <p class="notice">The CAPTCHA image is captured from the same Amazon session that triggered it instead of being fetched later as a separate image request.</p>
+    </div>
   </dialog>
 
   <footer><div class="footer-brand"><img src="{{ url_for('static', filename='assets/productiq-icon.PNG') }}" alt=""><span class="brand-word"><span class="brand-product">Product</span><span class="brand-iq">IQ</span></span></div><span>Product research, competitor comparison, pricing, and inventory intelligence.</span></footer>
