@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-import base64
+import contextlib
 import json
+import os
 import random
 import re
+import shutil
+import socket
+import subprocess
+import tempfile
 import time
 from html import unescape
+from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
 class AmazonResearchError(RuntimeError):
@@ -26,13 +33,13 @@ class AmazonCaptchaRequired(AmazonResearchError):
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
 ASIN_RE = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{10})(?![A-Z0-9])", re.I)
 SEARCH_HEADERS = {
     "User-Agent": USER_AGENTS[0],
     "Accept-Language": "en-US,en;q=0.9",
 }
+_CHROMIUM_PATH: str | None = None
 
 
 def _text(node) -> str:
@@ -62,182 +69,275 @@ def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
 
 
-def _browser_headers(user_agent: str | None = None) -> dict[str, str]:
-    return {
-        "User-Agent": user_agent or random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Upgrade-Insecure-Requests": "1",
-    }
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
-def create_amazon_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(_browser_headers())
-    return session
+def _chromium_executable() -> str:
+    global _CHROMIUM_PATH
+    if _CHROMIUM_PATH and Path(_CHROMIUM_PATH).exists():
+        return _CHROMIUM_PATH
+    with sync_playwright() as pw:
+        candidate = pw.chromium.executable_path
+    if not candidate or not Path(candidate).exists():
+        raise AmazonResearchError(
+            "Chromium is not installed. Render must run `playwright install chromium` during the build."
+        )
+    _CHROMIUM_PATH = candidate
+    return candidate
 
 
-def _ensure_session(session: requests.Session | None) -> requests.Session:
-    if session is None:
-        return create_amazon_session()
-    if not session.headers.get("User-Agent") or session.headers.get("User-Agent", "").startswith("python-requests"):
-        session.headers.update(_browser_headers())
-    return session
+class BrowserAmazonSession:
+    """Persistent Chromium process for one ProductIQ research job.
+
+    The Chromium process lives independently of Flask request threads. Each request
+    reconnects to it over Chrome DevTools Protocol, so the same Amazon cookies,
+    storage, page, and CAPTCHA challenge survive between requests.
+    """
+
+    def __init__(self):
+        self.port = _free_port()
+        self.user_data_dir = tempfile.mkdtemp(prefix="productiq-amazon-")
+        self.user_agent = random.choice(USER_AGENTS)
+        self.process: subprocess.Popen | None = None
+        self.created_at = time.time()
+        self._launch()
+
+    def _launch(self):
+        executable = _chromium_executable()
+        args = [
+            executable,
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--no-first-run",
+            "--mute-audio",
+            f"--remote-debugging-port={self.port}",
+            f"--user-data-dir={self.user_data_dir}",
+            "--window-size=1280,1000",
+            "--lang=en-US",
+            f"--user-agent={self.user_agent}",
+            "about:blank",
+        ]
+        self.process = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.time() + 18
+        endpoint = f"http://127.0.0.1:{self.port}/json/version"
+        last_error = None
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                raise AmazonResearchError("Chromium exited before the Amazon browser session could start.")
+            try:
+                response = requests.get(endpoint, timeout=0.8)
+                if response.ok:
+                    return
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.2)
+        self.close()
+        raise AmazonResearchError(f"Timed out starting Chromium for Amazon research: {last_error}")
+
+    @contextlib.contextmanager
+    def page(self):
+        if not self.process or self.process.poll() is not None:
+            raise AmazonResearchError("The Amazon browser session is no longer running.")
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{self.port}")
+            try:
+                contexts = browser.contexts
+                context = contexts[0] if contexts else browser.new_context(user_agent=self.user_agent)
+                pages = context.pages
+                page = pages[0] if pages else context.new_page()
+                page.set_default_timeout(18000)
+                page.set_default_navigation_timeout(45000)
+                yield page
+            finally:
+                # Do not call browser.close() here. This Chromium process is the
+                # persistent Amazon session for the entire ProductIQ job. Leaving
+                # the Playwright connection disconnects while Chromium keeps the
+                # exact page/cookies/challenge alive for the next request.
+                pass
+
+    def close(self):
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=3)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+        shutil.rmtree(self.user_data_dir, ignore_errors=True)
 
 
-def _get(url: str, retries: int = 2, session: requests.Session | None = None) -> requests.Response:
-    client = _ensure_session(session)
-    last_error: Exception | None = None
-    for attempt in range(retries + 1):
-        try:
-            response = client.get(url, timeout=(10, 28), allow_redirects=True)
-            if response.status_code == 200:
-                return response
-            last_error = AmazonResearchError(f"Amazon returned HTTP {response.status_code}.")
-        except requests.RequestException as exc:
-            last_error = exc
-        if attempt < retries:
-            time.sleep(1.4 + attempt * 1.3)
-    raise AmazonResearchError(f"Could not retrieve the Amazon page: {last_error}")
+def create_amazon_session() -> BrowserAmazonSession:
+    return BrowserAmazonSession()
 
 
-def _is_blocked(soup: BeautifulSoup, html: str) -> bool:
-    lowered = (html or "").lower()
-    markers = (
+def close_amazon_session(session: BrowserAmazonSession | None):
+    if session is not None:
+        session.close()
+
+
+def _blocked_from_html(html: str) -> bool:
+    lower = (html or "").lower()
+    return any(marker in lower for marker in (
         "enter the characters you see below",
         "sorry, we just need to make sure you're not a robot",
         "validatecaptcha",
         "robot check",
         "api-services-support@amazon.com",
-    )
-    return any(marker in lowered for marker in markers) or bool(
-        soup.select_one("form[action*='validateCaptcha']")
-    )
+    ))
 
 
-def _capture_image(session: requests.Session, image_url: str, page_url: str) -> tuple[str, str]:
-    """Capture the challenge image immediately while the challenge is fresh.
-
-    The previous implementation waited until the browser opened the modal and then
-    asked Amazon for the image again. Amazon frequently invalidates or refuses that
-    second fetch. Storing the bytes now keeps the exact image tied to this session.
-    """
-    if not image_url:
-        return "", ""
-    headers = {
-        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "Referer": page_url,
-        "Sec-Fetch-Dest": "image",
-        "Sec-Fetch-Mode": "no-cors",
-        "Sec-Fetch-Site": "same-origin",
-    }
-    try:
-        response = session.get(
-            image_url, headers=headers, timeout=(10, 20), allow_redirects=True
-        )
-        response.raise_for_status()
-        content_type = (response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip()
-        if not response.content or not content_type.lower().startswith("image/"):
-            return "", ""
-        return base64.b64encode(response.content).decode("ascii"), content_type
-    except Exception:
-        return "", ""
-
-
-def _captcha_challenge(
-    soup: BeautifulSoup,
-    page_url: str,
-    session: requests.Session | None = None,
-) -> dict[str, Any]:
-    form = soup.select_one("form[action*='validateCaptcha']")
-    image = soup.select_one("form[action*='validateCaptcha'] img[src], img[src*='captcha']")
-    fields: dict[str, str] = {}
-    if form:
-        for node in form.select("input[name]"):
-            name = node.get("name")
-            if name and name != "field-keywords":
-                fields[name] = node.get("value", "")
-
-    image_url = urljoin(page_url, image.get("src")) if image else ""
-    image_data, image_mime = ("", "")
-    if session is not None and image_url:
-        image_data, image_mime = _capture_image(_ensure_session(session), image_url, page_url)
-
+def _browser_challenge(page) -> dict[str, Any]:
     return {
-        "action": urljoin(page_url, form.get("action") if form else "/errors/validateCaptcha"),
-        "method": (form.get("method") if form else "get").lower(),
-        "imageUrl": image_url,
-        "imageData": image_data,
-        "imageMime": image_mime,
-        "fields": fields,
-        "pageUrl": page_url,
+        "browserSession": True,
+        "pageUrl": page.url,
+        "title": page.title(),
+        "capturedAt": time.time(),
     }
+
+
+def _ensure_not_blocked(page):
+    html = page.content()
+    if _blocked_from_html(html):
+        raise AmazonCaptchaRequired(
+            "Amazon requires human verification before product research can continue.",
+            _browser_challenge(page),
+        )
+    return html
+
+
+def _navigate(page, url: str):
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    except PlaywrightTimeoutError:
+        # A CAPTCHA page can finish enough to be interactive while long-lived
+        # resources keep the navigation timer open.
+        pass
+    except Exception as exc:
+        raise AmazonResearchError(f"Could not open Amazon in the browser session: {exc}")
+    return _ensure_not_blocked(page)
 
 
 def fetch_captcha_image(
-    session: requests.Session,
+    session: BrowserAmazonSession,
     challenge: dict[str, Any],
 ) -> tuple[bytes, str]:
-    stored = str(challenge.get("imageData") or "")
-    if stored:
-        return base64.b64decode(stored), str(challenge.get("imageMime") or "image/jpeg")
+    """Return a live screenshot of the exact Amazon page that is blocked.
 
-    image_url = str(challenge.get("imageUrl") or "").strip()
-    if not image_url:
-        raise AmazonResearchError("Amazon did not provide a CAPTCHA image URL.")
+    This is not a separately downloaded CAPTCHA image. It is the current viewport
+    of the same Chromium page/session Amazon challenged.
+    """
+    with session.page() as page:
+        if challenge.get("pageUrl") and page.url == "about:blank":
+            try:
+                page.goto(str(challenge["pageUrl"]), wait_until="domcontentloaded", timeout=45000)
+            except Exception:
+                pass
+        try:
+            image = page.screenshot(type="png", full_page=True)
+        except Exception as exc:
+            raise AmazonResearchError(f"Could not capture the live Amazon verification page: {exc}")
+        if not image:
+            raise AmazonResearchError("The live Amazon verification page returned an empty screenshot.")
+        return image, "image/png"
 
-    page_url = str(challenge.get("pageUrl") or "https://www.amazon.com/")
-    image_data, image_mime = _capture_image(_ensure_session(session), image_url, page_url)
-    if not image_data:
-        raise AmazonResearchError(
-            "Amazon did not return the CAPTCHA image. Reload the verification page to request a fresh challenge."
-        )
-    challenge["imageData"] = image_data
-    challenge["imageMime"] = image_mime
-    return base64.b64decode(image_data), image_mime
+
+def _captcha_input(page):
+    selectors = [
+        "input[name='field-keywords']",
+        "input#captchacharacters",
+        "input[name*='captcha' i]",
+        "input[autocomplete='off'][type='text']",
+        "form input[type='text']",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector)
+        try:
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def _captcha_submit(page):
+    selectors = [
+        "button[type='submit']",
+        "input[type='submit']",
+        "form button",
+        "button:has-text('Continue')",
+        "button:has-text('Submit')",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector)
+        try:
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            continue
+    return None
 
 
 def submit_captcha(
-    session: requests.Session,
+    session: BrowserAmazonSession,
     challenge: dict[str, Any],
     answer: str,
-) -> requests.Response:
+):
+    """Type the answer into Amazon's actual blocked Chromium page and submit it."""
     answer = (answer or "").strip()
     if not answer:
-        raise AmazonResearchError("Enter the characters shown in the CAPTCHA image.")
+        raise AmazonResearchError("Enter the characters shown on the Amazon verification page.")
 
-    values = dict(challenge.get("fields") or {})
-    values["field-keywords"] = answer
-    action = challenge.get("action") or "https://www.amazon.com/errors/validateCaptcha"
-    method = challenge.get("method", "get")
-    client = _ensure_session(session)
-    headers = {
-        "Referer": str(challenge.get("pageUrl") or "https://www.amazon.com/"),
-        "Origin": "https://www.amazon.com",
-    }
+    with session.page() as page:
+        field = _captcha_input(page)
+        if field is None:
+            raise AmazonResearchError(
+                "The live Amazon verification page does not currently have a CAPTCHA text field."
+            )
+        try:
+            field.fill(answer)
+        except Exception as exc:
+            raise AmazonResearchError(f"Could not type into Amazon's CAPTCHA field: {exc}")
 
-    if method == "post":
-        response = client.post(
-            action, data=values, headers=headers, timeout=(10, 28), allow_redirects=True
-        )
-    else:
-        response = client.get(
-            action, params=values, headers=headers, timeout=(10, 28), allow_redirects=True
-        )
+        submit = _captcha_submit(page)
+        if submit is None:
+            raise AmazonResearchError(
+                "The live Amazon verification page does not currently have a submit button."
+            )
 
-    soup = BeautifulSoup(response.text, "lxml")
-    if _is_blocked(soup, response.text):
-        raise AmazonCaptchaRequired(
-            "Amazon did not accept that answer. A fresh challenge is ready.",
-            _captcha_challenge(soup, response.url, client),
-        )
-    return response
+        old_url = page.url
+        try:
+            submit.click()
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except PlaywrightTimeoutError:
+                pass
+            page.wait_for_timeout(900)
+        except Exception as exc:
+            raise AmazonResearchError(f"Could not submit Amazon's verification form: {exc}")
 
-
-def _canonical_product_url(asin: str) -> str:
-    return f"https://www.amazon.com/dp/{asin}"
+        html = page.content()
+        if _blocked_from_html(html):
+            raise AmazonCaptchaRequired(
+                "Amazon did not accept that answer. The live verification page is still open.",
+                _browser_challenge(page),
+            )
+        return {"accepted": True, "url": page.url, "previousUrl": old_url}
 
 
 def _search_terms(*, name: str = "", upc: str = "", model: str = "", brand: str = "") -> list[str]:
@@ -252,7 +352,6 @@ def _search_terms(*, name: str = "", upc: str = "", model: str = "", brand: str 
         terms.append(f"{brand} {name}".strip())
     if name:
         terms.append(str(name).strip())
-
     seen, clean = set(), []
     for value in terms:
         key = value.lower()
@@ -262,14 +361,7 @@ def _search_terms(*, name: str = "", upc: str = "", model: str = "", brand: str 
     return clean
 
 
-def _candidate_score(
-    candidate_title: str,
-    *,
-    name: str = "",
-    upc: str = "",
-    model: str = "",
-    brand: str = "",
-) -> int:
+def _candidate_score(candidate_title: str, *, name="", upc="", model="", brand="") -> int:
     hay = _norm(candidate_title)
     normalized = re.sub(r"[^a-z0-9]", "", hay)
     score = 0
@@ -279,7 +371,6 @@ def _candidate_score(
         score += 55
     if brand and _norm(brand) in hay:
         score += 18
-
     source_tokens = [
         token for token in _norm(name).split()
         if len(token) >= 3 and token not in {"the", "and", "for", "with", "pack", "set"}
@@ -290,41 +381,11 @@ def _candidate_score(
     return min(score, 100)
 
 
-def _amazon_search_results(
-    query: str,
-    session: requests.Session,
-) -> list[dict[str, str]]:
-    response = _get(
-        f"https://www.amazon.com/s?k={quote_plus(query)}",
-        retries=1,
-        session=session,
-    )
-    soup = BeautifulSoup(response.text, "lxml")
-    if _is_blocked(soup, response.text):
-        raise AmazonCaptchaRequired(
-            "Amazon requires verification before product search can continue.",
-            _captcha_challenge(soup, response.url, session),
-        )
-
-    results = []
-    for node in soup.select("div[data-component-type='s-search-result'][data-asin]"):
-        asin = (node.get("data-asin") or "").strip().upper()
-        if not asin or not ASIN_RE.fullmatch(asin):
-            continue
-        link = node.select_one("h2 a[href], a.a-link-normal.s-no-outline[href]")
-        title_node = node.select_one("h2 span, h2, .a-size-medium.a-color-base.a-text-normal")
-        title = _text(title_node)
-        if link:
-            results.append({
-                "asin": asin,
-                "url": _canonical_product_url(asin),
-                "title": title,
-            })
-    return results
+def _canonical_product_url(asin: str) -> str:
+    return f"https://www.amazon.com/dp/{asin}"
 
 
 def _external_amazon_candidates(query: str, timeout=6) -> list[dict[str, str]]:
-    """Fallback discovery when Amazon search markup returns no usable cards."""
     candidates, seen = [], set()
     urls = [
         f"https://www.bing.com/search?q={quote_plus('site:amazon.com/dp ' + query)}",
@@ -335,38 +396,32 @@ def _external_amazon_candidates(query: str, timeout=6) -> list[dict[str, str]]:
             response = requests.get(search_url, headers=SEARCH_HEADERS, timeout=timeout)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
-            anchors = soup.select("li.b_algo h2 a[href], .result__a[href]")
-            for anchor in anchors:
+            for anchor in soup.select("li.b_algo h2 a[href], .result__a[href]"):
                 href = anchor.get("href", "")
                 if "duckduckgo.com/l/" in href:
                     href = unquote(parse_qs(urlparse(href).query).get("uddg", [href])[0])
-                asin = _extract_asin(href)
-                if not asin:
-                    asin = _extract_asin(anchor.get_text(" ", strip=True))
-                if not asin or asin in seen:
-                    continue
-                seen.add(asin)
-                candidates.append({
-                    "asin": asin,
-                    "url": _canonical_product_url(asin),
-                    "title": anchor.get_text(" ", strip=True),
-                })
+                asin = _extract_asin(href) or _extract_asin(anchor.get_text(" ", strip=True))
+                if asin and asin not in seen:
+                    seen.add(asin)
+                    candidates.append({
+                        "asin": asin,
+                        "url": _canonical_product_url(asin),
+                        "title": anchor.get_text(" ", strip=True),
+                    })
         except Exception:
             continue
     return candidates
 
 
-def _search_for_product(
+def _search_for_product_browser(
+    page,
     *,
     name: str = "",
     upc: str = "",
     model: str = "",
     brand: str = "",
-    session: requests.Session | None = None,
 ) -> tuple[str, str]:
-    client = _ensure_session(session)
     candidates: dict[str, dict[str, Any]] = {}
-
     terms = _search_terms(name=name, upc=upc, model=model, brand=brand)
     if not terms:
         raise AmazonResearchError(
@@ -374,19 +429,22 @@ def _search_for_product(
         )
 
     for query in terms:
-        try:
-            rows = _amazon_search_results(query, client)
-        except AmazonCaptchaRequired:
-            raise
-        except AmazonResearchError:
-            rows = []
-        for row in rows:
-            score = _candidate_score(
-                row.get("title", ""), name=name, upc=upc, model=model, brand=brand
-            )
-            current = candidates.get(row["asin"])
+        html = _navigate(page, f"https://www.amazon.com/s?k={quote_plus(query)}")
+        soup = BeautifulSoup(html, "lxml")
+        for node in soup.select("div[data-component-type='s-search-result'][data-asin]"):
+            asin = (node.get("data-asin") or "").strip().upper()
+            if not asin or not ASIN_RE.fullmatch(asin):
+                continue
+            title = _text(node.select_one("h2 span, h2, .a-size-medium.a-color-base.a-text-normal"))
+            score = _candidate_score(title, name=name, upc=upc, model=model, brand=brand)
+            current = candidates.get(asin)
             if current is None or score > current["score"]:
-                candidates[row["asin"]] = {**row, "score": score, "query": query}
+                candidates[asin] = {
+                    "asin": asin,
+                    "url": _canonical_product_url(asin),
+                    "title": title,
+                    "score": score,
+                }
         if candidates and max(row["score"] for row in candidates.values()) >= 70:
             break
 
@@ -398,17 +456,14 @@ def _search_for_product(
                 )
                 current = candidates.get(row["asin"])
                 if current is None or score > current["score"]:
-                    candidates[row["asin"]] = {**row, "score": score, "query": query}
+                    candidates[row["asin"]] = {**row, "score": score}
 
     if not candidates:
         raise AmazonResearchError(
             "Amazon search returned no usable listing candidates for the identifiers supplied."
         )
 
-    best = sorted(
-        candidates.values(),
-        key=lambda row: (-row["score"], row["asin"]),
-    )[0]
+    best = sorted(candidates.values(), key=lambda row: (-row["score"], row["asin"]))[0]
     return best["asin"], best["url"]
 
 
@@ -442,19 +497,13 @@ def _image_urls(soup: BeautifulSoup, html: str, structured: dict[str, Any]) -> l
         urls.append(image_data)
     elif isinstance(image_data, list):
         urls.extend(str(value) for value in image_data)
-
     for node in soup.select("#altImages img[src], #imageBlock img[src], #landingImage[src]"):
         src = node.get("data-old-hires") or node.get("src")
         if src:
             urls.append(src)
-
-    for pattern in (
-        r'"hiRes"\s*:\s*"(https:[^"]+)"',
-        r'"large"\s*:\s*"(https:[^"]+)"',
-    ):
+    for pattern in (r'"hiRes"\s*:\s*"(https:[^"]+)"', r'"large"\s*:\s*"(https:[^"]+)"'):
         for match in re.finditer(pattern, html):
             urls.append(match.group(1).replace("\\u0026", "&").replace("\\/", "/"))
-
     clean = []
     for url in urls:
         url = unescape(url).replace("\\/", "/")
@@ -465,20 +514,18 @@ def _image_urls(soup: BeautifulSoup, html: str, structured: dict[str, Any]) -> l
 
 def _details(soup: BeautifulSoup) -> dict[str, str]:
     details: dict[str, str] = {}
-    selectors = (
+    for selector in (
         "#productDetails_techSpec_section_1 tr",
         "#productDetails_detailBullets_sections1 tr",
         "#technicalSpecifications_section_1 tr",
         "table.prodDetTable tr",
-    )
-    for selector in selectors:
+    ):
         for row in soup.select(selector):
             key = _text(row.select_one("th")) or _text(row.select_one("td.label"))
             cells = row.select("td")
             value = _text(cells[-1]) if cells else ""
             if key and value:
                 details[key.strip(" ‎\n\t:")] = value
-
     for item in soup.select("#detailBullets_feature_div li"):
         bold = item.select_one("span.a-text-bold")
         if bold:
@@ -491,8 +538,8 @@ def _details(soup: BeautifulSoup) -> dict[str, str]:
 
 def _detail_value(details: dict[str, str], *needles: str) -> str:
     for key, value in details.items():
-        lowered = key.lower()
-        if any(needle in lowered for needle in needles):
+        lower = key.lower()
+        if any(needle in lower for needle in needles):
             return value
     return ""
 
@@ -505,7 +552,6 @@ def _categories(soup: BeautifulSoup, structured: dict[str, Any]) -> list[str]:
             part.strip() for part in re.split(r"\s*[>/|]\s*", schema_category)
             if part.strip()
         )
-
     for node in soup.select(
         "#wayfinding-breadcrumbs_feature_div a, "
         "#wayfinding-breadcrumbs_container a, "
@@ -525,125 +571,107 @@ def research_product(
     upc: str = "",
     model: str = "",
     brand: str = "",
-    session: requests.Session | None = None,
+    session: BrowserAmazonSession | None = None,
 ) -> dict[str, Any]:
-    client = _ensure_session(session)
+    if session is None:
+        raise AmazonResearchError("ProductIQ did not receive an Amazon browser session.")
+
     asin = _extract_asin(asin) or _extract_asin(url)
 
-    if not asin:
-        asin, url = _search_for_product(
-            name=name,
-            upc=upc,
-            model=model,
-            brand=brand,
-            session=client,
+    with session.page() as page:
+        if not asin:
+            asin, _ = _search_for_product_browser(
+                page, name=name, upc=upc, model=model, brand=brand
+            )
+
+        product_url = _canonical_product_url(asin)
+        html = _navigate(page, product_url)
+        soup = BeautifulSoup(html, "lxml")
+        structured = _json_ld(soup)
+
+        title = (
+            _first_text(soup, ["#productTitle", "h1#title", "h1.a-size-large"])
+            or str(structured.get("name") or "")
+        )
+        if not title:
+            raise AmazonResearchError(
+                "Amazon loaded a page, but ProductIQ could not verify a product title on it."
+            )
+
+        bullets = []
+        for node in soup.select("#feature-bullets li span.a-list-item"):
+            value = _text(node)
+            if value and value not in bullets and not value.lower().startswith("make sure this fits"):
+                bullets.append(value)
+
+        description = (
+            _first_text(
+                soup,
+                [
+                    "#productDescription",
+                    "#aplus_feature_div",
+                    "#bookDescription_feature_div",
+                    "#productDescription_feature_div",
+                ],
+            )
+            or str(structured.get("description") or "")
         )
 
-    product_url = _canonical_product_url(asin)
-    response = _get(product_url, session=client)
-    soup = BeautifulSoup(response.text, "lxml")
-
-    if _is_blocked(soup, response.text):
-        raise AmazonCaptchaRequired(
-            "Amazon requires human verification before this product can continue.",
-            _captcha_challenge(soup, response.url, client),
-        )
-
-    structured = _json_ld(soup)
-    title = (
-        _first_text(soup, ["#productTitle", "h1#title", "h1.a-size-large"])
-        or str(structured.get("name") or "")
-    )
-    if not title:
-        raise AmazonResearchError(
-            "Amazon loaded a page, but ProductIQ could not verify a product title on it."
-        )
-
-    bullets = []
-    for node in soup.select("#feature-bullets li span.a-list-item"):
-        value = _text(node)
-        if value and value not in bullets and not value.lower().startswith("make sure this fits"):
-            bullets.append(value)
-
-    description = (
-        _first_text(
+        price = _first_text(
             soup,
             [
-                "#productDescription",
-                "#aplus_feature_div",
-                "#bookDescription_feature_div",
-                "#productDescription_feature_div",
+                "#corePrice_feature_div .a-price .a-offscreen",
+                "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
+                "#priceblock_ourprice",
+                "#priceblock_dealprice",
+                "#price_inside_buybox",
+                ".apexPriceToPay .a-offscreen",
             ],
         )
-        or str(structured.get("description") or "")
-    )
+        offers = structured.get("offers")
+        if not price and isinstance(offers, dict) and offers.get("price"):
+            currency = offers.get("priceCurrency") or "$"
+            price = f"{currency} {offers['price']}"
+        price = _clean_price(price)
 
-    price = _first_text(
-        soup,
-        [
-            "#corePrice_feature_div .a-price .a-offscreen",
-            "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
-            "#priceblock_ourprice",
-            "#priceblock_dealprice",
-            "#price_inside_buybox",
-            ".apexPriceToPay .a-offscreen",
-        ],
-    )
-    offers = structured.get("offers")
-    if not price and isinstance(offers, dict) and offers.get("price"):
-        currency = offers.get("priceCurrency") or "$"
-        price = f"{currency} {offers['price']}"
-    price = _clean_price(price)
+        rating = _first_text(soup, ["#acrPopover .a-icon-alt", "span[data-hook='rating-out-of-text']"])
+        review_count = _first_text(soup, ["#acrCustomerReviewText", "span[data-hook='total-review-count']"])
+        availability = _first_text(soup, ["#availability", "#outOfStock", "#availabilityInsideBuyBox_feature_div"])
+        byline = _first_text(soup, ["#bylineInfo"])
+        result_brand = brand or byline.replace("Visit the ", "").replace(" Store", "").strip()
+        if not result_brand:
+            structured_brand = structured.get("brand")
+            if isinstance(structured_brand, dict):
+                result_brand = str(structured_brand.get("name") or "")
+            elif structured_brand:
+                result_brand = str(structured_brand)
 
-    rating = _first_text(
-        soup, ["#acrPopover .a-icon-alt", "span[data-hook='rating-out-of-text']"]
-    )
-    review_count = _first_text(
-        soup, ["#acrCustomerReviewText", "span[data-hook='total-review-count']"]
-    )
-    availability = _first_text(
-        soup, ["#availability", "#outOfStock", "#availabilityInsideBuyBox_feature_div"]
-    )
-    byline = _first_text(soup, ["#bylineInfo"])
-    brand = brand or byline.replace("Visit the ", "").replace(" Store", "").strip()
-    if not brand:
-        structured_brand = structured.get("brand")
-        if isinstance(structured_brand, dict):
-            brand = str(structured_brand.get("name") or "")
-        elif structured_brand:
-            brand = str(structured_brand)
+        seller = _first_text(
+            soup,
+            ["#sellerProfileTriggerId", "#merchant-info", "#tabular-buybox-truncate-1 .a-truncate-full"],
+        )
+        details = _details(soup)
+        categories = _categories(soup, structured)
+        images = _image_urls(soup, html, structured)
 
-    seller = _first_text(
-        soup,
-        [
-            "#sellerProfileTriggerId",
-            "#merchant-info",
-            "#tabular-buybox-truncate-1 .a-truncate-full",
-        ],
-    )
-
-    details = _details(soup)
-    categories = _categories(soup, structured)
-    images = _image_urls(soup, response.text, structured)
-
-    return {
-        "asin": asin,
-        "url": response.url or product_url,
-        "title": title,
-        "brand": brand,
-        "price": price,
-        "availability": availability,
-        "rating": rating,
-        "reviewCount": review_count,
-        "seller": seller,
-        "bullets": bullets,
-        "description": description,
-        "categories": categories,
-        "details": details,
-        "dimensions": _detail_value(details, "product dimensions", "item dimensions"),
-        "weight": _detail_value(details, "item weight", "product weight"),
-        "manufacturer": _detail_value(details, "manufacturer"),
-        "modelNumber": _detail_value(details, "item model number", "model number"),
-        "partNumber": _detail_value(details, "part number"),
-        "images": images,
-    }
+        return {
+            "asin": asin,
+            "url": page.url or product_url,
+            "title": title,
+            "brand": result_brand,
+            "price": price,
+            "availability": availability,
+            "rating": rating,
+            "reviewCount": review_count,
+            "seller": seller,
+            "bullets": bullets,
+            "description": description,
+            "categories": categories,
+            "details": details,
+            "dimensions": _detail_value(details, "product dimensions", "item dimensions"),
+            "weight": _detail_value(details, "item weight", "product weight"),
+            "manufacturer": _detail_value(details, "manufacturer"),
+            "modelNumber": _detail_value(details, "item model number", "model number"),
+            "partNumber": _detail_value(details, "part number"),
+            "images": images,
+        }
