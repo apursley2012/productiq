@@ -14,6 +14,7 @@ from productiq.amazon import (
     AmazonCaptchaRequired,
     AmazonResearchError,
     create_amazon_session,
+    close_amazon_session,
     fetch_captcha_image,
     research_product,
     submit_captcha,
@@ -35,7 +36,7 @@ MAX_BATCH = max(1, int(os.getenv("PRODUCTIQ_MAX_BATCH", "25")))
 REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 JOBS: dict[str, dict] = {}
 
-PRODUCTIQ_BUILD = "2026-08-14-productiq-functional-v6-research-captcha-taxonomy"
+PRODUCTIQ_BUILD = "2026-08-18-productiq-v8-live-browser-captcha"
 PRODUCTIQ_FEATURES = [
     "ASIN, Amazon URL, product-name, UPC/EAN/GTIN, model, brand, and SKU-aware input",
     "Amazon product discovery that actually uses UPC/model/brand search identifiers",
@@ -380,7 +381,10 @@ def process_next(job_id: str):
     done = job["nextIndex"] >= len(job["items"])
     job["status"] = "complete" if done else "ready"
 
-    if not done and REQUEST_DELAY:
+    if done:
+        close_amazon_session(job.get("_httpSession"))
+        job["_httpSession"] = None
+    elif REQUEST_DELAY:
         time.sleep(REQUEST_DELAY)
 
     return jsonify({
