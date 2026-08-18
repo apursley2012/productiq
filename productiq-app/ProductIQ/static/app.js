@@ -20,6 +20,20 @@
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[character]);
 
+  async function readJson(response) {
+    const text = await response.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      throw new Error(
+        response.ok
+          ? 'ProductIQ returned an unreadable response.'
+          : `ProductIQ server error (HTTP ${response.status}). Check the Render log for the matching request.`
+      );
+    }
+  }
+
   function toast(message) {
     const element = $('#toast');
     if (!element) return;
@@ -58,7 +72,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ results: state.results })
       });
-      const data = await response.json();
+      const data = await readJson(response);
       if (!response.ok) throw new Error(data.error || 'Catalog analysis failed.');
       state.results = data.results || state.results;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.results));
@@ -159,7 +173,7 @@
     const originalText = button?.textContent || '';
     if (button) {
       button.disabled = true;
-      button.textContent = 'Loading…';
+      button.textContent = 'Loadingâ¦';
     }
 
     try {
@@ -167,7 +181,7 @@
       if (!items.length) {
         const sampleUrl = document.body.dataset.sampleUrl || '/api/sample';
         const response = await fetch(sampleUrl, { cache: 'no-store' });
-        const data = await response.json();
+        const data = await readJson(response);
         if (!response.ok) throw new Error(data.error || 'Could not load the sample data.');
         items = data.items || [];
       }
@@ -205,12 +219,12 @@
     $('#file-label').textContent = file.name;
     const form = new FormData();
     form.append('file', file);
-    $('#upload-message').textContent = 'Reading spreadsheet…';
+    $('#upload-message').textContent = 'Reading spreadsheetâ¦';
     $('#upload-message').classList.remove('hidden');
 
     try {
       const response = await fetch('/api/import', { method: 'POST', body: form });
-      const data = await response.json();
+      const data = await readJson(response);
       if (!response.ok) throw new Error(data.error);
 
       state.importedRows = data.rows;
@@ -290,7 +304,7 @@
       await new Promise(resolve => setTimeout(resolve, 1600));
       try {
         const response = await fetch(`/api/jobs/${jobId}`, { cache: 'no-store' });
-        const data = await response.json();
+        const data = await readJson(response);
         if (response.ok && data.status !== 'captcha_required') {
           $('#captcha-dialog').close();
           const resolve = state.captchaResolve;
@@ -348,7 +362,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: state.queue })
       });
-      let data = await response.json();
+      let data = await readJson(response);
       if (!response.ok) throw new Error(data.error);
 
       const id = data.jobId;
@@ -359,7 +373,7 @@
         setProgress(completed, total, `Researching ${label(state.queue[completed])}`);
 
         response = await fetch(`/api/jobs/${id}/next`, { method: 'POST' });
-        data = await response.json();
+        data = await readJson(response);
         if (!response.ok) throw new Error(data.error);
 
         if (data.captchaRequired) {
@@ -382,7 +396,7 @@
       setProgress(
         total,
         total,
-        'Research complete. Updating categories and catalog relationships…'
+        'Research complete. Updating categories and catalog relationshipsâ¦'
       );
       await enrichCatalog();
       setProgress(total, total, 'Research complete. Review the results below.');
@@ -392,8 +406,9 @@
       $('#results').scrollIntoView({ behavior: 'smooth' });
       toast('Product research complete.');
     } catch (error) {
-      setProgress(0, 1, error.message);
-      toast(error.message);
+      const message = error?.message || String(error) || 'Product research failed.';
+      setProgress(0, 1, message);
+      toast(message);
     } finally {
       $('#run-research').disabled = !state.queue.length;
     }
@@ -418,7 +433,7 @@
       .filter(value => Number.isFinite(value));
     $('#metric-margin').textContent = margins.length
       ? `${(margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1)}%`
-      : '—';
+      : 'â';
   }
 
   function filteredResults() {
@@ -440,11 +455,11 @@
     if (!info.queriesTried?.length && !info.message) return '';
     const providers = Object.entries(info.providers || {})
       .map(([name, status]) => `${name}: ${status}`)
-      .join(' · ');
+      .join(' Â· ');
     return `<details>
       <summary>Competitor search details</summary>
       ${info.message ? `<p>${esc(info.message)}</p>` : ''}
-      ${info.queriesTried?.length ? `<p><strong>Queries tried:</strong> ${info.queriesTried.map(esc).join(' · ')}</p>` : ''}
+      ${info.queriesTried?.length ? `<p><strong>Queries tried:</strong> ${info.queriesTried.map(esc).join(' Â· ')}</p>` : ''}
       ${providers ? `<p><strong>Search providers:</strong> ${esc(providers)}</p>` : ''}
     </details>`;
   }
@@ -493,17 +508,17 @@
 
           ${category.category ? `<p class="catalog-path">
             <strong>${esc(category.category)}</strong>
-            ${category.subcategory ? ` <span>›</span> ${esc(category.subcategory)}` : ''}
+            ${category.subcategory ? ` <span>âº</span> ${esc(category.subcategory)}` : ''}
             ${category.confidence != null ? ` <small>(${esc(category.confidence)}% category confidence)</small>` : ''}
           </p>` : ''}
 
           ${result.url ? `<p><a href="${esc(result.url)}" target="_blank" rel="noopener">Open product listing</a></p>` : ''}
 
           <div class="intelligence-grid">
-            <span><small>Input cost</small><b>${pricing.cost != null ? '$' + Number(pricing.cost).toFixed(2) : '—'}</b></span>
-            <span><small>Market average</small><b>${pricing.marketAverage != null ? '$' + Number(pricing.marketAverage).toFixed(2) : '—'}</b></span>
-            <span><small>Suggested price</small><b>${pricing.suggestedPrice != null ? '$' + Number(pricing.suggestedPrice).toFixed(2) : '—'}</b></span>
-            <span><small>Est. margin</small><b>${pricing.estimatedMargin != null ? pricing.estimatedMargin + '%' : '—'}</b></span>
+            <span><small>Input cost</small><b>${pricing.cost != null ? '$' + Number(pricing.cost).toFixed(2) : 'â'}</b></span>
+            <span><small>Market average</small><b>${pricing.marketAverage != null ? '$' + Number(pricing.marketAverage).toFixed(2) : 'â'}</b></span>
+            <span><small>Suggested price</small><b>${pricing.suggestedPrice != null ? '$' + Number(pricing.suggestedPrice).toFixed(2) : 'â'}</b></span>
+            <span><small>Est. margin</small><b>${pricing.estimatedMargin != null ? pricing.estimatedMargin + '%' : 'â'}</b></span>
           </div>
 
           ${result.competitors?.length ? `<details>
@@ -512,10 +527,10 @@
               <p>
                 <strong>${esc(candidate.retailer)}</strong>
                 ${candidate.domain ? ` <small>${esc(candidate.domain)}</small>` : ''}
-                ${candidate.price != null ? ` · $${Number(candidate.price).toFixed(2)}` : ' · price unavailable'}
-                · ${esc(candidate.matchConfidence || '')}
+                ${candidate.price != null ? ` Â· $${Number(candidate.price).toFixed(2)}` : ' Â· price unavailable'}
+                Â· ${esc(candidate.matchConfidence || '')}
                 ${Number.isFinite(candidate.matchScore) ? ` (${candidate.matchScore}%)` : ''}
-                ${candidate.matchReason ? ` · ${esc(candidate.matchReason)}` : ''}
+                ${candidate.matchReason ? ` Â· ${esc(candidate.matchReason)}` : ''}
                 ${candidate.url ? ` <a href="${esc(candidate.url)}" target="_blank" rel="noopener">View listing</a>` : ''}
               </p>`).join('')}
             </div>
@@ -526,7 +541,7 @@
             <div class="recommendation-list">${result.crossSells.map(item => `
               <div class="recommendation-row">
                 ${item.image ? `<img src="${esc(item.image)}" alt="">` : ''}
-                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` · $${Number(item.price).toFixed(2)}` : ''}</small></span>
+                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` Â· $${Number(item.price).toFixed(2)}` : ''}</small></span>
               </div>`).join('')}
             </div>
           </details>` : ''}
@@ -536,7 +551,7 @@
             <div class="recommendation-list">${result.upsells.map(item => `
               <div class="recommendation-row">
                 ${item.image ? `<img src="${esc(item.image)}" alt="">` : ''}
-                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` · $${Number(item.price).toFixed(2)}` : ''}</small></span>
+                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` Â· $${Number(item.price).toFixed(2)}` : ''}</small></span>
               </div>`).join('')}
             </div>
           </details>` : ''}
@@ -607,7 +622,7 @@
     });
 
     if (!response.ok) {
-      const data = await response.json();
+      const data = await readJson(response);
       return toast(data.error);
     }
 
