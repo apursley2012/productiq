@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0F172A">
   <title>Amazon Verification | ProductIQ</title>
   <link rel="icon" href="{{ url_for('static', filename='assets/productiq-icon.PNG') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=16">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=17">
   <style>
     .verify-page{min-height:100vh;min-height:100dvh;padding:24px 14px 60px;display:grid;place-items:start center}
     .verify-shell{width:min(680px,100%);margin-top:28px}
@@ -15,8 +15,8 @@
     .verify-image img{display:block;max-width:100%;height:auto}
     .verify-form{display:grid;gap:14px}
     .verify-form label{display:grid;gap:8px;font-weight:700}
-    .verify-status{margin-top:16px}
-    .verify-success{padding:18px;border-radius:14px}
+    .verify-status{margin-top:16px;white-space:pre-wrap}
+    .captcha-loading-copy{color:#1f2937;text-align:center}
   </style>
 </head>
 <body class="verify-page">
@@ -33,15 +33,14 @@
       {% if expired %}
         <p class="error-message">This research session has expired. Return to ProductIQ and start that product again.</p>
       {% else %}
-        <p>This is the verification challenge tied to the Amazon session ProductIQ is currently using. The research job is paused until Amazon accepts the answer.</p>
+        <p>This is a live view of the exact Amazon browser session ProductIQ is using. Enter the characters shown below and ProductIQ types them into that same Amazon page and submits it there.</p>
 
-        {% if has_image %}
-          <div class="verify-image">
-            <img id="captcha-image" src="{{ url_for('captcha_image', job_id=job_id) }}?ts={{ range(1, 9999999) | random }}" alt="Amazon CAPTCHA challenge">
-          </div>
-        {% else %}
-          <div class="notice">Amazon did not return a usable challenge image. Reload this page once to request the current challenge. If it still does not appear, return to ProductIQ and retry the product.</div>
-        {% endif %}
+        <div class="verify-image" id="verify-image-box">
+          <div id="captcha-loading" class="captcha-loading-copy">Loading the live Amazon verification page…</div>
+          <img id="captcha-image" alt="Live Amazon verification page" hidden>
+        </div>
+
+        <div id="image-error" class="notice hidden"></div>
 
         <form id="verify-form" class="verify-form">
           <label>
@@ -65,6 +64,10 @@
     const input = document.getElementById('verify-answer');
     const submit = document.getElementById('verify-submit');
     const statusBox = document.getElementById('verify-status');
+    const image = document.getElementById('captcha-image');
+    const loading = document.getElementById('captcha-loading');
+    const imageError = document.getElementById('image-error');
+    let objectUrl = null;
 
     function status(message, isError=false) {
       statusBox.textContent = message;
@@ -72,7 +75,56 @@
       statusBox.classList.toggle('error-message', isError);
     }
 
-    document.getElementById('verify-reload').onclick = () => location.reload();
+    async function loadChallenge() {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
+      }
+      image.hidden = true;
+      image.removeAttribute('src');
+      imageError.classList.add('hidden');
+      imageError.textContent = '';
+      loading.hidden = false;
+      loading.textContent = 'Loading the live Amazon verification page…';
+
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/captcha-image?ts=${Date.now()}`, {
+          cache: 'no-store'
+        });
+
+        if (!response.ok) {
+          let message = `Could not load Amazon verification image (HTTP ${response.status}).`;
+          try {
+            const data = await response.json();
+            message = data.error || message;
+          } catch (_) {}
+          throw new Error(message);
+        }
+
+        const blob = await response.blob();
+        if (!blob.size) throw new Error('Amazon returned an empty verification image.');
+
+        objectUrl = URL.createObjectURL(blob);
+        image.src = objectUrl;
+        image.onload = () => {
+          loading.hidden = true;
+          image.hidden = false;
+          input.focus();
+        };
+        image.onerror = () => {
+          loading.hidden = true;
+          image.hidden = true;
+          imageError.textContent = 'The server returned challenge data, but Safari could not display it.';
+          imageError.classList.remove('hidden');
+        };
+      } catch (error) {
+        loading.hidden = true;
+        imageError.textContent = error.message || 'Amazon did not return a usable verification image.';
+        imageError.classList.remove('hidden');
+      }
+    }
+
+    document.getElementById('verify-reload').onclick = loadChallenge;
 
     form.onsubmit = async event => {
       event.preventDefault();
@@ -94,7 +146,7 @@
         if (!response.ok || !data.accepted) {
           status(data.message || data.error || 'Amazon did not accept that answer.', true);
           input.value = '';
-          setTimeout(() => location.reload(), 1200);
+          await loadChallenge();
           return;
         }
 
@@ -111,7 +163,7 @@
         document.querySelector('.verify-card').innerHTML = `
           <p class="eyebrow">Verification accepted</p>
           <h1>Amazon accepted the CAPTCHA.</h1>
-          <p>Go back to the ProductIQ tab. The research job is still there and will continue with the same product.</p>
+          <p>Go back to the ProductIQ tab. The same product and batch can continue.</p>
           <div class="button-row">
             <button class="button primary" onclick="window.close()">Close this tab</button>
             <a class="button secondary" href="/">Open ProductIQ</a>
@@ -126,6 +178,8 @@
         }
       }
     };
+
+    loadChallenge();
   </script>
   {% endif %}
 </body>
