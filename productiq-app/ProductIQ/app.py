@@ -36,7 +36,7 @@ MAX_BATCH = max(1, int(os.getenv("PRODUCTIQ_MAX_BATCH", "25")))
 REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 JOBS: dict[str, dict] = {}
 
-PRODUCTIQ_BUILD = "2026-08-18-productiq-v8-live-browser-captcha"
+PRODUCTIQ_BUILD = "2026-08-18-productiq-v9-playwright-worker"
 PRODUCTIQ_FEATURES = [
     "ASIN, Amazon URL, product-name, UPC/EAN/GTIN, model, brand, and SKU-aware input",
     "Amazon product discovery that actually uses UPC/model/brand search identifiers",
@@ -288,6 +288,19 @@ def create_job():
     if not items:
         return jsonify({"error": "No usable product identifiers were found."}), 400
 
+    try:
+        amazon_session = create_amazon_session()
+    except AmazonResearchError as exc:
+        return jsonify({
+            "error": f"Could not start the Amazon browser session: {exc}",
+            "stage": "browser-startup",
+        }), 503
+    except Exception as exc:
+        return jsonify({
+            "error": f"Could not start the Amazon browser session: {type(exc).__name__}: {exc}",
+            "stage": "browser-startup",
+        }), 503
+
     job_id = uuid.uuid4().hex
     JOBS[job_id] = {
         "id": job_id,
@@ -296,7 +309,7 @@ def create_job():
         "results": [],
         "nextIndex": 0,
         "createdAt": time.time(),
-        "_httpSession": create_amazon_session(),
+        "_httpSession": amazon_session,
         "captcha": None,
         "pendingPartial": None,
     }
