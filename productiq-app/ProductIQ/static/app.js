@@ -506,7 +506,7 @@
       .filter(value => Number.isFinite(value));
     $('#metric-margin').textContent = margins.length
       ? `${(margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1)}%`
-      : 'N/A';
+      : '0%';
   }
 
   function filteredResults() {
