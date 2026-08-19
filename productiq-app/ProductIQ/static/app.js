@@ -11,6 +11,8 @@
     captchaResolve: null,
     captchaReject: null,
     activeCaptchaJob: null,
+    activeResearchJob: null,
+    browserPollTimer: null,
     resultSearch: '',
     resultStatus: ''
   };
@@ -368,6 +370,7 @@
       const id = data.jobId;
       const total = data.count;
       let completed = 0;
+      startBrowserPolling(id);
 
       while (completed < total) {
         setProgress(completed, total, `Researching ${label(state.queue[completed])}`);
@@ -405,14 +408,84 @@
       renderQueue();
       $('#results').scrollIntoView({ behavior: 'smooth' });
       toast('Product research complete.');
+      stopBrowserPolling();
     } catch (error) {
       const message = error?.message || String(error) || 'Product research failed.';
       setProgress(0, 1, message);
       toast(message);
     } finally {
+      stopBrowserPolling();
       $('#run-research').disabled = !state.queue.length;
     }
   };
+
+  function ensureBrowserPanel() {
+    let panel = document.getElementById('browser-activity');
+    if (panel) return panel;
+    const progressCard = document.querySelector('#progress-section .progress-card');
+    if (!progressCard) return null;
+
+    panel = document.createElement('details');
+    panel.id = 'browser-activity';
+    panel.className = 'browser-activity';
+    panel.innerHTML = `
+      <summary>Browser activity</summary>
+      <div style="display:grid;gap:10px;margin-top:12px">
+        <div id="browser-current" class="notice">Waiting for browser activityâ¦</div>
+        <img id="browser-screenshot" alt="Current Amazon browser view"
+             style="display:none;width:100%;max-height:520px;object-fit:contain;background:#fff;border-radius:12px">
+        <div id="browser-events" style="display:grid;gap:6px"></div>
+      </div>`;
+    progressCard.appendChild(panel);
+    return panel;
+  }
+
+  async function refreshBrowserActivity(jobId) {
+    if (!jobId) return;
+    ensureBrowserPanel();
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/browser-debug?ts=${Date.now()}`, {cache:'no-store'});
+      const data = await readJson(response);
+      if (!response.ok) return;
+
+      const current = document.getElementById('browser-current');
+      if (current) {
+        const parts = [];
+        if (data.title) parts.push(data.title);
+        if (data.url) parts.push(data.url);
+        current.textContent = parts.join(' Â· ') || 'Browser is runningâ¦';
+      }
+
+      const events = document.getElementById('browser-events');
+      if (events) {
+        const rows = (data.events || []).slice(-12).reverse();
+        events.innerHTML = rows.map(item => `
+          <div style="padding:8px 10px;border:1px solid rgba(255,255,255,.08);border-radius:10px">
+            <strong>${esc(item.event || '')}</strong>
+            ${item.detail ? `<div>${esc(item.detail)}</div>` : ''}
+            ${item.url ? `<small>${esc(item.url)}</small>` : ''}
+          </div>`).join('');
+      }
+
+      const img = document.getElementById('browser-screenshot');
+      if (img && data.hasScreenshot) {
+        img.src = `/api/jobs/${jobId}/browser-screenshot?ts=${Date.now()}`;
+        img.style.display = 'block';
+      }
+    } catch (_) {}
+  }
+
+  function startBrowserPolling(jobId) {
+    state.activeResearchJob = jobId;
+    clearInterval(state.browserPollTimer);
+    refreshBrowserActivity(jobId);
+    state.browserPollTimer = setInterval(() => refreshBrowserActivity(jobId), 1200);
+  }
+
+  function stopBrowserPolling() {
+    clearInterval(state.browserPollTimer);
+    state.browserPollTimer = null;
+  }
 
   function setProgress(done, total, message) {
     $('#progress-number').textContent = `${done} / ${total}`;
