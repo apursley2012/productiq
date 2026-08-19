@@ -41,6 +41,42 @@ SEARCH_HEADERS = {
     "User-Agent": USER_AGENTS[0],
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+_TRACE_LOCAL = threading.local()
+
+
+def _trace(page, event: str, detail: str = "", *, screenshot: bool = True):
+    """Record what the Amazon browser is doing for the ProductIQ UI."""
+    session = getattr(_TRACE_LOCAL, "session", None)
+    if session is None:
+        return
+    try:
+        url = page.url
+    except Exception:
+        url = ""
+    title = ""
+    try:
+        title = page.title()
+    except Exception:
+        pass
+    image = None
+    if screenshot:
+        try:
+            image = page.screenshot(type="jpeg", quality=55, full_page=False)
+        except Exception:
+            image = None
+    session._record_trace(event, detail, url=url, title=title, screenshot=image)
+
+
+def _browser_challenge(page) -> dict[str, Any]:
+    """Describe the exact live Amazon page that requires human verification."""
+    _trace(page, "Verification required", "Amazon stopped the browser for human verification.")
+    return {
+        "browserSession": True,
+        "pageUrl": page.url,
+        "title": page.title(),
+        "capturedAt": time.time(),
+    }
 _CHROMIUM_PATH: str | None = None
 
 
@@ -106,6 +142,11 @@ class BrowserAmazonSession:
         self._ready = threading.Event()
         self._startup_error: Exception | None = None
         self._closed = False
+        self._trace_lock = threading.Lock()
+        self._trace_events: list[dict[str, Any]] = []
+        self._latest_screenshot: bytes | None = None
+        self._latest_url = ""
+        self._latest_title = ""
         self._thread = threading.Thread(
             target=self._run,
             name=f"productiq-amazon-{id(self)}",
@@ -144,6 +185,8 @@ class BrowserAmazonSession:
                 page = context.new_page()
                 page.set_default_timeout(18000)
                 page.set_default_navigation_timeout(45000)
+                _TRACE_LOCAL.session = self
+                self._record_trace("Browser ready", "Chromium started and is ready for Amazon research.", url=page.url, title="")
                 self._ready.set()
 
                 while True:
@@ -179,6 +222,38 @@ class BrowserAmazonSession:
         if status == "error":
             raise value
         return value
+
+    def _record_trace(self, event: str, detail: str = "", *, url: str = "", title: str = "", screenshot: bytes | None = None):
+        entry = {
+            "time": time.time(),
+            "event": str(event or ""),
+            "detail": str(detail or ""),
+            "url": str(url or ""),
+            "title": str(title or ""),
+        }
+        with self._trace_lock:
+            self._trace_events.append(entry)
+            self._trace_events = self._trace_events[-60:]
+            if screenshot:
+                self._latest_screenshot = screenshot
+            if url:
+                self._latest_url = url
+            if title:
+                self._latest_title = title
+
+    def debug_state(self) -> dict[str, Any]:
+        with self._trace_lock:
+            return {
+                "events": list(self._trace_events),
+                "url": self._latest_url,
+                "title": self._latest_title,
+                "hasScreenshot": bool(self._latest_screenshot),
+                "closed": self._closed,
+            }
+
+    def latest_screenshot(self) -> bytes | None:
+        with self._trace_lock:
+            return self._latest_screenshot
 
     def close(self):
         if self._closed:
@@ -249,6 +324,7 @@ def _dismiss_continue_shopping(page) -> bool:
         return False
 
     try:
+        _trace(page, "Amazon interstitial", "Clicking Continue shopping.")
         control.click()
         try:
             page.wait_for_load_state("domcontentloaded", timeout=20000)
@@ -284,6 +360,7 @@ def _ensure_not_blocked(page):
 
 
 def _navigate(page, url: str):
+    _trace(page, "Opening page", url, screenshot=False)
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
     except PlaywrightTimeoutError:
@@ -291,7 +368,9 @@ def _navigate(page, url: str):
         # resources keep the navigation timer open.
         pass
     except Exception as exc:
+        _trace(page, "Navigation error", str(exc))
         raise AmazonResearchError(f"Could not open Amazon in the browser session: {exc}")
+    _trace(page, "Page loaded", page.url)
     return _ensure_not_blocked(page)
 
 
@@ -491,8 +570,10 @@ def _search_for_product_browser(
         )
 
     for query in terms:
+        _trace(page, "Searching Amazon", query, screenshot=False)
         html = _navigate(page, f"https://www.amazon.com/s?k={quote_plus(query)}")
         soup = BeautifulSoup(html, "lxml")
+        query_count = 0
         for node in soup.select("div[data-component-type='s-search-result'][data-asin]"):
             asin = (node.get("data-asin") or "").strip().upper()
             if not asin or not ASIN_RE.fullmatch(asin):
@@ -500,6 +581,7 @@ def _search_for_product_browser(
             title = _text(node.select_one("h2 span, h2, .a-size-medium.a-color-base.a-text-normal"))
             score = _candidate_score(title, name=name, upc=upc, model=model, brand=brand)
             current = candidates.get(asin)
+            query_count += 1
             if current is None or score > current["score"]:
                 candidates[asin] = {
                     "asin": asin,
@@ -507,6 +589,7 @@ def _search_for_product_browser(
                     "title": title,
                     "score": score,
                 }
+        _trace(page, "Amazon search results", f"{query_count} listing cards found for: {query}")
         if candidates and max(row["score"] for row in candidates.values()) >= 70:
             break
 
@@ -526,6 +609,7 @@ def _search_for_product_browser(
         )
 
     best = sorted(candidates.values(), key=lambda row: (-row["score"], row["asin"]))[0]
+    _trace(page, "Selected Amazon match", f"{best['asin']} Â· score {best['score']} Â· {best.get('title', '')}", screenshot=False)
     return best["asin"], best["url"]
 
 
@@ -642,6 +726,7 @@ def _research_product_on_page(
         )
 
     product_url = _canonical_product_url(asin)
+    _trace(page, "Opening product", f"{asin} Â· {product_url}", screenshot=False)
     html = _navigate(page, product_url)
     soup = BeautifulSoup(html, "lxml")
     structured = _json_ld(soup)
@@ -710,6 +795,12 @@ def _research_product_on_page(
     details = _details(soup)
     categories = _categories(soup, structured)
     images = _image_urls(soup, html, structured)
+
+    _trace(
+        page,
+        "Product extracted",
+        f"{title} Â· price={price or 'none'} Â· images={len(images)} Â· bullets={len(bullets)} Â· details={len(details)}",
+    )
 
     return {
         "asin": asin,
