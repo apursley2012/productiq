@@ -197,33 +197,90 @@ def close_amazon_session(session: BrowserAmazonSession | None):
 
 
 def _blocked_from_html(html: str) -> bool:
+    """Detect a real Amazon CAPTCHA page from strong CAPTCHA-specific markers."""
     lower = (html or "").lower()
     return any(marker in lower for marker in (
         "enter the characters you see below",
         "sorry, we just need to make sure you're not a robot",
         "validatecaptcha",
         "robot check",
-        "api-services-support@amazon.com",
     ))
 
 
-def _browser_challenge(page) -> dict[str, Any]:
-    return {
-        "browserSession": True,
-        "pageUrl": page.url,
-        "title": page.title(),
-        "capturedAt": time.time(),
-    }
+def _visible_captcha_field(page) -> bool:
+    selectors = [
+        "input#captchacharacters",
+        "input[name='field-keywords']",
+        "input[name*='captcha' i]",
+        "form[action*='validateCaptcha' i] input[type='text']",
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() and locator.first.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _continue_shopping_control(page):
+    """Return Amazon's harmless continue-shopping interstitial control, if present."""
+    selectors = [
+        "button:has-text('Continue shopping')",
+        "a:has-text('Continue shopping')",
+        "input[type='submit'][value*='Continue shopping' i]",
+        "input[type='button'][value*='Continue shopping' i]",
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def _dismiss_continue_shopping(page) -> bool:
+    """Automatically pass Amazon's non-CAPTCHA 'Continue shopping' interstitial."""
+    control = _continue_shopping_control(page)
+    if control is None:
+        return False
+
+    try:
+        control.click()
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=20000)
+        except PlaywrightTimeoutError:
+            pass
+        page.wait_for_timeout(700)
+        return True
+    except Exception as exc:
+        raise AmazonResearchError(
+            f"Amazon showed a Continue shopping page, but ProductIQ could not continue through it: {exc}"
+        )
 
 
 def _ensure_not_blocked(page):
+    # Amazon sometimes sends a simple "Continue shopping" interstitial that is not
+    # a CAPTCHA. Pass through it automatically before deciding human input is needed.
+    for _ in range(2):
+        if not _dismiss_continue_shopping(page):
+            break
+
     html = page.content()
-    if _blocked_from_html(html):
+
+    # Only stop for human verification when the page actually contains a CAPTCHA
+    # input/form or strong CAPTCHA-specific wording. Generic Amazon error/support
+    # text by itself is not enough.
+    if _visible_captcha_field(page) or _blocked_from_html(html):
         raise AmazonCaptchaRequired(
             "Amazon requires human verification before product research can continue.",
             _browser_challenge(page),
         )
     return html
+
 
 
 def _navigate(page, url: str):
