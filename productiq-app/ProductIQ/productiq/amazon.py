@@ -15,7 +15,7 @@ import time
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse, urljoin, urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -173,6 +173,7 @@ class BrowserAmazonSession:
                         "--disable-default-apps",
                         "--disable-extensions",
                         "--disable-sync",
+                        "--disable-blink-features=AutomationControlled",
                         "--no-first-run",
                         "--mute-audio",
                     ],
@@ -182,6 +183,11 @@ class BrowserAmazonSession:
                     locale="en-US",
                     viewport={"width": 1280, "height": 1000},
                 )
+                context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                """)
                 page = context.new_page()
                 page.set_default_timeout(18000)
                 page.set_default_navigation_timeout(45000)
@@ -285,9 +291,9 @@ def _blocked_from_html(html: str) -> bool:
 def _visible_captcha_field(page) -> bool:
     selectors = [
         "input#captchacharacters",
-        "input[name='field-keywords']",
-        "input[name*='captcha' i]",
+        "input[name*='captcha' i]:not([type='hidden'])",
         "form[action*='validateCaptcha' i] input[type='text']",
+        "form[action*='validateCaptcha' i] input:not([type='hidden'])[name='field-keywords']",
     ]
     for selector in selectors:
         try:
@@ -299,57 +305,170 @@ def _visible_captcha_field(page) -> bool:
     return False
 
 
-def _continue_shopping_control(page):
-    """Return Amazon's harmless continue-shopping interstitial control, if present."""
+def _continue_shopping_form(page) -> dict[str, Any] | None:
+    """Read Amazon's no-input Continue shopping form and its hidden validation values."""
+    try:
+        html = page.content()
+    except Exception:
+        return None
+    soup = BeautifulSoup(html, "lxml")
+    phrase = soup.find(
+        lambda tag: tag.name in {"h1", "h2", "h3", "h4", "p", "div", "span"}
+        and "click the button below to continue shopping" in tag.get_text(" ", strip=True).lower()
+    )
+    button = soup.find(
+        lambda tag: tag.name in {"button", "input", "a"}
+        and "continue shopping" in (
+            (tag.get_text(" ", strip=True) if hasattr(tag, "get_text") else "")
+            + " " + str(tag.get("value") or "")
+            + " " + str(tag.get("alt") or "")
+        ).lower()
+    )
+    if not phrase and not button:
+        return None
+
+    form = button.find_parent("form") if button and getattr(button, "find_parent", None) else None
+    if form is None:
+        form = soup.find("form", action=re.compile("validateCaptcha", re.I))
+    if form is None:
+        return {"action": "", "method": "get", "fields": {}}
+
+    fields: dict[str, str] = {}
+    for node in form.find_all(["input", "button"]):
+        name = str(node.get("name") or "").strip()
+        if name:
+            fields[name] = str(node.get("value") or "")
+
+    return {
+        "action": str(form.get("action") or ""),
+        "method": str(form.get("method") or "get").lower(),
+        "fields": fields,
+    }
+
+
+def _is_continue_shopping_page(page) -> bool:
+    return _continue_shopping_form(page) is not None
+
+
+def _direct_submit_continue_form(page, form_info: dict[str, Any]) -> bool:
+    action = str(form_info.get("action") or "").strip()
+    fields = dict(form_info.get("fields") or {})
+    if not action:
+        return False
+
+    destination = urljoin(page.url, action)
+    method = str(form_info.get("method") or "get").lower()
+    _trace(page, "Amazon interstitial", f"Submitting Amazon continue form with {method.upper()} {destination}", screenshot=False)
+
+    try:
+        if method == "get":
+            query = urlencode(fields, doseq=True)
+            url = destination + (("&" if "?" in destination else "?") + query if query else "")
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        else:
+            # Submit the exact existing Amazon form in-page so cookies and hidden
+            # challenge fields stay tied to this browser session.
+            form = page.locator("form").filter(has=page.get_by_text("Continue shopping", exact=False)).first
+            if form.count():
+                form.evaluate("(f) => { if (f.requestSubmit) f.requestSubmit(); else f.submit(); }")
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=25000)
+                except PlaywrightTimeoutError:
+                    pass
+            else:
+                return False
+        page.wait_for_timeout(900)
+        return True
+    except PlaywrightTimeoutError:
+        return True
+    except Exception as exc:
+        _trace(page, "Interstitial form error", str(exc))
+        return False
+
+
+def _click_continue_control(page) -> bool:
     selectors = [
         "button:has-text('Continue shopping')",
         "a:has-text('Continue shopping')",
         "input[type='submit'][value*='Continue shopping' i]",
         "input[type='button'][value*='Continue shopping' i]",
+        "button[alt*='Continue shopping' i]",
     ]
     for selector in selectors:
         try:
             locator = page.locator(selector)
-            if locator.count() and locator.first.is_visible():
-                return locator.first
-        except Exception:
-            continue
-    return None
+            if not locator.count() or not locator.first.is_visible():
+                continue
+            _trace(page, "Amazon interstitial", "Clicking Continue shopping.")
+            locator.first.click(force=True)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
+            except PlaywrightTimeoutError:
+                pass
+            page.wait_for_timeout(900)
+            return True
+        except Exception as exc:
+            _trace(page, "Interstitial click error", str(exc))
+    return False
 
 
-def _dismiss_continue_shopping(page) -> bool:
-    """Automatically pass Amazon's non-CAPTCHA 'Continue shopping' interstitial."""
-    control = _continue_shopping_control(page)
-    if control is None:
-        return False
-
-    try:
-        _trace(page, "Amazon interstitial", "Clicking Continue shopping.")
-        control.click()
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=20000)
-        except PlaywrightTimeoutError:
-            pass
-        page.wait_for_timeout(700)
+def _clear_continue_shopping(page, target_url: str) -> bool:
+    """Clear Amazon's Continue shopping challenge without treating it as a CAPTCHA."""
+    if not _is_continue_shopping_page(page):
         return True
+
+    # Attempt 1: normal browser click.
+    _click_continue_control(page)
+    if not _is_continue_shopping_page(page):
+        _trace(page, "Amazon interstitial cleared", page.url)
+        return True
+
+    # Attempt 2: submit Amazon's exact hidden validation values directly.
+    info = _continue_shopping_form(page) or {}
+    _direct_submit_continue_form(page, info)
+    if not _is_continue_shopping_page(page):
+        _trace(page, "Amazon interstitial cleared", page.url)
+        return True
+
+    # Attempt 3: validation may have set a cookie even if Amazon redisplayed the
+    # challenge. Re-open the page ProductIQ originally wanted.
+    try:
+        _trace(page, "Retrying target page", target_url, screenshot=False)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+    except PlaywrightTimeoutError:
+        pass
     except Exception as exc:
-        raise AmazonResearchError(
-            f"Amazon showed a Continue shopping page, but ProductIQ could not continue through it: {exc}"
-        )
+        _trace(page, "Target retry error", str(exc))
+    page.wait_for_timeout(900)
+
+    if not _is_continue_shopping_page(page):
+        _trace(page, "Amazon interstitial cleared", page.url)
+        return True
+
+    # One last exact form submission using Amazon's refreshed token.
+    info = _continue_shopping_form(page) or {}
+    _direct_submit_continue_form(page, info)
+    if not _is_continue_shopping_page(page):
+        _trace(page, "Amazon interstitial cleared", page.url)
+        return True
+
+    _trace(
+        page,
+        "Amazon interstitial still active",
+        "Amazon returned the Continue shopping anti-bot page again after click, form submission, and target retry.",
+    )
+    return False
 
 
-def _ensure_not_blocked(page):
-    # Amazon sometimes sends a simple "Continue shopping" interstitial that is not
-    # a CAPTCHA. Pass through it automatically before deciding human input is needed.
-    for _ in range(2):
-        if not _dismiss_continue_shopping(page):
-            break
+def _ensure_not_blocked(page, target_url: str):
+    if _is_continue_shopping_page(page):
+        if not _clear_continue_shopping(page, target_url):
+            raise AmazonResearchError(
+                "Amazon kept returning its Continue shopping anti-bot page after ProductIQ clicked and submitted it. "
+                "This is not a CAPTCHA, and ProductIQ did not pretend it extracted a product from that page."
+            )
 
     html = page.content()
-
-    # Only stop for human verification when the page actually contains a CAPTCHA
-    # input/form or strong CAPTCHA-specific wording. Generic Amazon error/support
-    # text by itself is not enough.
     if _visible_captcha_field(page) or _blocked_from_html(html):
         raise AmazonCaptchaRequired(
             "Amazon requires human verification before product research can continue.",
@@ -358,20 +477,18 @@ def _ensure_not_blocked(page):
     return html
 
 
-
 def _navigate(page, url: str):
     _trace(page, "Opening page", url, screenshot=False)
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
     except PlaywrightTimeoutError:
-        # A CAPTCHA page can finish enough to be interactive while long-lived
-        # resources keep the navigation timer open.
         pass
     except Exception as exc:
         _trace(page, "Navigation error", str(exc))
         raise AmazonResearchError(f"Could not open Amazon in the browser session: {exc}")
+
     _trace(page, "Page loaded", page.url)
-    return _ensure_not_blocked(page)
+    return _ensure_not_blocked(page, url)
 
 
 def _verification_screenshot(page, challenge: dict[str, Any]) -> tuple[bytes, str]:
@@ -398,11 +515,10 @@ def fetch_captcha_image(
 
 def _captcha_input(page):
     selectors = [
-        "input[name='field-keywords']",
         "input#captchacharacters",
-        "input[name*='captcha' i]",
-        "input[autocomplete='off'][type='text']",
-        "form input[type='text']",
+        "input[name*='captcha' i]:not([type='hidden'])",
+        "form[action*='validateCaptcha' i] input[type='text']",
+        "form[action*='validateCaptcha' i] input:not([type='hidden'])[name='field-keywords']",
     ]
     for selector in selectors:
         locator = page.locator(selector)
@@ -416,6 +532,7 @@ def _captcha_input(page):
 
 def _captcha_submit(page):
     selectors = [
+        "form[action*='validateCaptcha' i] button[type='submit']",
         "button[type='submit']",
         "input[type='submit']",
         "form button",
@@ -439,9 +556,14 @@ def _submit_captcha_on_page(page, challenge: dict[str, Any], answer: str):
 
     field = _captcha_input(page)
     if field is None:
+        if _is_continue_shopping_page(page):
+            raise AmazonResearchError(
+                "Amazon is showing its Continue shopping page, not a CAPTCHA. Return to ProductIQ and retry the product."
+            )
         raise AmazonResearchError(
             "The live Amazon verification page does not currently have a CAPTCHA text field."
         )
+
     try:
         field.fill(answer)
     except Exception as exc:
@@ -455,7 +577,7 @@ def _submit_captcha_on_page(page, challenge: dict[str, Any], answer: str):
 
     old_url = page.url
     try:
-        submit.click()
+        submit.click(force=True)
         try:
             page.wait_for_load_state("domcontentloaded", timeout=30000)
         except PlaywrightTimeoutError:
@@ -464,8 +586,11 @@ def _submit_captcha_on_page(page, challenge: dict[str, Any], answer: str):
     except Exception as exc:
         raise AmazonResearchError(f"Could not submit Amazon's verification form: {exc}")
 
+    if _is_continue_shopping_page(page):
+        _clear_continue_shopping(page, str(challenge.get("pageUrl") or old_url))
+
     html = page.content()
-    if _blocked_from_html(html):
+    if _visible_captcha_field(page) or _blocked_from_html(html):
         raise AmazonCaptchaRequired(
             "Amazon did not accept that answer. The live verification page is still open.",
             _browser_challenge(page),
@@ -479,6 +604,7 @@ def submit_captcha(
     answer: str,
 ):
     return session.call(_submit_captcha_on_page, challenge, answer, timeout=90)
+
 
 
 def _search_terms(*, name: str = "", upc: str = "", model: str = "", brand: str = "") -> list[str]:
@@ -609,7 +735,7 @@ def _search_for_product_browser(
         )
 
     best = sorted(candidates.values(), key=lambda row: (-row["score"], row["asin"]))[0]
-    _trace(page, "Selected Amazon match", f"{best['asin']} Â· score {best['score']} Â· {best.get('title', '')}", screenshot=False)
+    _trace(page, "Selected Amazon match", f"{best['asin']} | score {best['score']} | {best.get('title', '')}", screenshot=False)
     return best["asin"], best["url"]
 
 
@@ -725,19 +851,52 @@ def _research_product_on_page(
             page, name=name, upc=upc, model=model, brand=brand
         )
 
-    product_url = _canonical_product_url(asin)
-    _trace(page, "Opening product", f"{asin} Â· {product_url}", screenshot=False)
-    html = _navigate(page, product_url)
-    soup = BeautifulSoup(html, "lxml")
-    structured = _json_ld(soup)
+    product_urls = [
+        _canonical_product_url(asin),
+        f"https://www.amazon.com/gp/product/{asin}?psc=1",
+        f"https://www.amazon.com/gp/aw/d/{asin}",
+    ]
+    html = ""
+    soup = None
+    structured = {}
+    title = ""
+    product_url = product_urls[0]
+    failures = []
 
-    title = (
-        _first_text(soup, ["#productTitle", "h1#title", "h1.a-size-large"])
-        or str(structured.get("name") or "")
-    )
-    if not title:
+    for candidate_url in product_urls:
+        product_url = candidate_url
+        _trace(page, "Opening product", f"{asin} | {candidate_url}", screenshot=False)
+        try:
+            candidate_html = _navigate(page, candidate_url)
+        except AmazonCaptchaRequired:
+            raise
+        except AmazonResearchError as exc:
+            failures.append(str(exc))
+            _trace(page, "Product URL failed", str(exc))
+            continue
+
+        candidate_soup = BeautifulSoup(candidate_html, "lxml")
+        candidate_structured = _json_ld(candidate_soup)
+        candidate_title = (
+            _first_text(candidate_soup, ["#productTitle", "h1#title", "h1.a-size-large"])
+            or str(candidate_structured.get("name") or "")
+        )
+
+        if candidate_title:
+            html = candidate_html
+            soup = candidate_soup
+            structured = candidate_structured
+            title = candidate_title
+            break
+
+        failures.append(f"No product title found at {candidate_url}")
+        _trace(page, "No product data on page", candidate_url)
+
+    if not title or soup is None:
+        detail = " | ".join(dict.fromkeys(failures))[-1400:]
         raise AmazonResearchError(
-            "Amazon loaded a page, but ProductIQ could not verify a product title on it."
+            "Amazon did not return an extractable product page for this ASIN."
+            + (f" {detail}" if detail else "")
         )
 
     bullets = []
@@ -799,7 +958,7 @@ def _research_product_on_page(
     _trace(
         page,
         "Product extracted",
-        f"{title} Â· price={price or 'none'} Â· images={len(images)} Â· bullets={len(bullets)} Â· details={len(details)}",
+        f"{title} | price={price or 'none'} | images={len(images)} | bullets={len(bullets)} | details={len(details)}",
     )
 
     return {
