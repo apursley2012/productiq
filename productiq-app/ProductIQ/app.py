@@ -36,7 +36,7 @@ MAX_BATCH = max(1, int(os.getenv("PRODUCTIQ_MAX_BATCH", "25")))
 REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 JOBS: dict[str, dict] = {}
 
-PRODUCTIQ_BUILD = "2026-08-18-productiq-v11-browser-trace"
+PRODUCTIQ_BUILD = "2026-08-18-productiq-v12-amazon-interstitial-extraction"
 PRODUCTIQ_FEATURES = [
     "ASIN, Amazon URL, product-name, UPC/EAN/GTIN, model, brand, and SKU-aware input",
     "Amazon product discovery that actually uses UPC/model/brand search identifiers",
@@ -65,6 +65,13 @@ def allow_embedding(response):
         "frame-ancestors 'self' https://*.github.io https://github.com"
     )
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    # ProductIQ changes frequently while the Amazon/browser workflow is being
+    # validated. Prevent Safari from holding on to an older app.js after a deploy.
+    if request.path.endswith((".js", ".css")) or request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
