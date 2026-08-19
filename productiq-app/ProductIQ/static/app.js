@@ -175,7 +175,7 @@
     const originalText = button?.textContent || '';
     if (button) {
       button.disabled = true;
-      button.textContent = 'Loadingâ¦';
+      button.textContent = 'Loading...';
     }
 
     try {
@@ -221,7 +221,7 @@
     $('#file-label').textContent = file.name;
     const form = new FormData();
     form.append('file', file);
-    $('#upload-message').textContent = 'Reading spreadsheetâ¦';
+    $('#upload-message').textContent = 'Reading spreadsheet...';
     $('#upload-message').classList.remove('hidden');
 
     try {
@@ -399,7 +399,7 @@
       setProgress(
         total,
         total,
-        'Research complete. Updating categories and catalog relationshipsâ¦'
+        'Research complete. Updating categories and catalog relationships...'
       );
       await enrichCatalog();
       setProgress(total, total, 'Research complete. Review the results below.');
@@ -431,7 +431,7 @@
     panel.innerHTML = `
       <summary>Browser activity</summary>
       <div style="display:grid;gap:10px;margin-top:12px">
-        <div id="browser-current" class="notice">Waiting for browser activityâ¦</div>
+        <div id="browser-current" class="notice">Waiting for browser activity...</div>
         <img id="browser-screenshot" alt="Current Amazon browser view"
              style="display:none;width:100%;max-height:520px;object-fit:contain;background:#fff;border-radius:12px">
         <div id="browser-events" style="display:grid;gap:6px"></div>
@@ -453,7 +453,7 @@
         const parts = [];
         if (data.title) parts.push(data.title);
         if (data.url) parts.push(data.url);
-        current.textContent = parts.join(' Â· ') || 'Browser is runningâ¦';
+        current.textContent = parts.join(' | ') || 'Browser is running...';
       }
 
       const events = document.getElementById('browser-events');
@@ -506,7 +506,7 @@
       .filter(value => Number.isFinite(value));
     $('#metric-margin').textContent = margins.length
       ? `${(margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1)}%`
-      : 'â';
+      : 'N/A';
   }
 
   function filteredResults() {
@@ -528,11 +528,11 @@
     if (!info.queriesTried?.length && !info.message) return '';
     const providers = Object.entries(info.providers || {})
       .map(([name, status]) => `${name}: ${status}`)
-      .join(' Â· ');
+      .join(' | ');
     return `<details>
       <summary>Competitor search details</summary>
       ${info.message ? `<p>${esc(info.message)}</p>` : ''}
-      ${info.queriesTried?.length ? `<p><strong>Queries tried:</strong> ${info.queriesTried.map(esc).join(' Â· ')}</p>` : ''}
+      ${info.queriesTried?.length ? `<p><strong>Queries tried:</strong> ${info.queriesTried.map(esc).join(' | ')}</p>` : ''}
       ${providers ? `<p><strong>Search providers:</strong> ${esc(providers)}</p>` : ''}
     </details>`;
   }
@@ -588,10 +588,10 @@
           ${result.url ? `<p><a href="${esc(result.url)}" target="_blank" rel="noopener">Open product listing</a></p>` : ''}
 
           <div class="intelligence-grid">
-            <span><small>Input cost</small><b>${pricing.cost != null ? '$' + Number(pricing.cost).toFixed(2) : 'â'}</b></span>
-            <span><small>Market average</small><b>${pricing.marketAverage != null ? '$' + Number(pricing.marketAverage).toFixed(2) : 'â'}</b></span>
-            <span><small>Suggested price</small><b>${pricing.suggestedPrice != null ? '$' + Number(pricing.suggestedPrice).toFixed(2) : 'â'}</b></span>
-            <span><small>Est. margin</small><b>${pricing.estimatedMargin != null ? pricing.estimatedMargin + '%' : 'â'}</b></span>
+            <span><small>Input cost</small><b>${pricing.cost != null ? '$' + Number(pricing.cost).toFixed(2) : 'N/A'}</b></span>
+            <span><small>Market average</small><b>${pricing.marketAverage != null ? '$' + Number(pricing.marketAverage).toFixed(2) : 'N/A'}</b></span>
+            <span><small>Suggested price</small><b>${pricing.suggestedPrice != null ? '$' + Number(pricing.suggestedPrice).toFixed(2) : 'N/A'}</b></span>
+            <span><small>Est. margin</small><b>${pricing.estimatedMargin != null ? pricing.estimatedMargin + '%' : 'N/A'}</b></span>
           </div>
 
           ${result.competitors?.length ? `<details>
@@ -600,10 +600,10 @@
               <p>
                 <strong>${esc(candidate.retailer)}</strong>
                 ${candidate.domain ? ` <small>${esc(candidate.domain)}</small>` : ''}
-                ${candidate.price != null ? ` Â· $${Number(candidate.price).toFixed(2)}` : ' Â· price unavailable'}
-                Â· ${esc(candidate.matchConfidence || '')}
+                ${candidate.price != null ? ` | $${Number(candidate.price).toFixed(2)}` : ' | price unavailable'}
+                | ${esc(candidate.matchConfidence || '')}
                 ${Number.isFinite(candidate.matchScore) ? ` (${candidate.matchScore}%)` : ''}
-                ${candidate.matchReason ? ` Â· ${esc(candidate.matchReason)}` : ''}
+                ${candidate.matchReason ? ` | ${esc(candidate.matchReason)}` : ''}
                 ${candidate.url ? ` <a href="${esc(candidate.url)}" target="_blank" rel="noopener">View listing</a>` : ''}
               </p>`).join('')}
             </div>
@@ -614,7 +614,7 @@
             <div class="recommendation-list">${result.crossSells.map(item => `
               <div class="recommendation-row">
                 ${item.image ? `<img src="${esc(item.image)}" alt="">` : ''}
-                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` Â· $${Number(item.price).toFixed(2)}` : ''}</small></span>
+                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` | $${Number(item.price).toFixed(2)}` : ''}</small></span>
               </div>`).join('')}
             </div>
           </details>` : ''}
@@ -624,7 +624,7 @@
             <div class="recommendation-list">${result.upsells.map(item => `
               <div class="recommendation-row">
                 ${item.image ? `<img src="${esc(item.image)}" alt="">` : ''}
-                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` Â· $${Number(item.price).toFixed(2)}` : ''}</small></span>
+                <span><strong>${esc(item.title)}</strong><small>${esc(item.reason || '')}${item.price != null ? ` | $${Number(item.price).toFixed(2)}` : ''}</small></span>
               </div>`).join('')}
             </div>
           </details>` : ''}
