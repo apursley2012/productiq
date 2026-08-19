@@ -36,7 +36,7 @@ MAX_BATCH = max(1, int(os.getenv("PRODUCTIQ_MAX_BATCH", "25")))
 REQUEST_DELAY = max(0.0, float(os.getenv("PRODUCTIQ_REQUEST_DELAY", "2.5")))
 JOBS: dict[str, dict] = {}
 
-PRODUCTIQ_BUILD = "2026-08-18-productiq-v9-playwright-worker"
+PRODUCTIQ_BUILD = "2026-08-18-productiq-v11-browser-trace"
 PRODUCTIQ_FEATURES = [
     "ASIN, Amazon URL, product-name, UPC/EAN/GTIN, model, brand, and SKU-aware input",
     "Amazon product discovery that actually uses UPC/model/brand search identifiers",
@@ -513,6 +513,55 @@ def solve_captcha(job_id: str):
         "accepted": True,
         "message": "Amazon accepted the verification. Return to ProductIQ and the same product will continue.",
     })
+
+
+
+@app.get("/api/jobs/<job_id>/browser-debug")
+def browser_debug(job_id: str):
+    try:
+        job = _get_job(job_id)
+    except KeyError:
+        return jsonify({"error": "This job expired."}), 404
+
+    session = job.get("_httpSession")
+    if not session:
+        return jsonify({
+            "events": [],
+            "url": "",
+            "title": "",
+            "hasScreenshot": False,
+            "closed": True,
+        })
+    try:
+        return jsonify(session.debug_state())
+    except Exception as exc:
+        return jsonify({"error": f"Could not read browser activity: {exc}"}), 500
+
+
+@app.get("/api/jobs/<job_id>/browser-screenshot")
+def browser_screenshot(job_id: str):
+    try:
+        job = _get_job(job_id)
+    except KeyError:
+        return jsonify({"error": "This job expired."}), 404
+
+    session = job.get("_httpSession")
+    if not session:
+        return jsonify({"error": "The Amazon browser session is no longer running."}), 404
+
+    image = session.latest_screenshot()
+    if not image:
+        return jsonify({"error": "No browser screenshot has been captured yet."}), 404
+
+    return Response(
+        image,
+        content_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 CSV_HEADERS = [
