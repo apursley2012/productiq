@@ -393,7 +393,7 @@ footer { background: rgba(7,16,31,.7); }
   align-items: center;
   justify-content: flex-start;
   width: fit-content;
-  margin-bottom: 24px;
+  margin: 8px;
   padding: 0;
   background: transparent;
   border: 0;
