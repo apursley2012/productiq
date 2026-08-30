@@ -4,7 +4,7 @@ import json
 import re
 import statistics
 from collections import Counter
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
