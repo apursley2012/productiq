@@ -462,9 +462,24 @@ def _offer_price(offers):
     return _num(offers.get("price") or offers.get("lowPrice") or offers.get("highPrice"))
 
 
+def _validate_url(url: str) -> str:
+    try:
+        if "/../" in url or re.search(r"/%2e%2e/", url, re.IGNORECASE):
+            raise ValueError("Invalid path")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("Invalid protocol")
+        if not parsed.hostname:
+            raise ValueError("Invalid host")
+        return url
+    except Exception:
+        raise ValueError("Invalid URL")
+
+
 def _page_listing_data(url: str, timeout=4.5):
     try:
-        response = requests.get(url, headers=SEARCH_HEADERS, timeout=timeout, allow_redirects=True)
+        validated_url = _validate_url(url)
+        response = requests.get(validated_url, headers=SEARCH_HEADERS, timeout=timeout, allow_redirects=True)
         if response.status_code >= 400 or not response.text:
             return {}
         soup = BeautifulSoup(response.text, "html.parser")
