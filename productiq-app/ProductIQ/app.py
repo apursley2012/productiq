@@ -61,15 +61,17 @@ def _get_job(job_id: str) -> dict:
 @app.after_request
 def allow_embedding(response):
     response.headers.pop("X-Frame-Options", None)
-    response.headers["Content-Security-Policy"] = (
-        "frame-ancestors 'self' https://*.github.io https://github.com"
-    )
+    response.headers[
+        "Content-Security-Policy"
+    ] = "frame-ancestors 'self' https://*.github.io https://github.com"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
     # ProductIQ changes frequently while the Amazon/browser workflow is being
     # validated. Prevent Safari from holding on to an older app.js after a deploy.
     if request.path.endswith((".js", ".css")) or request.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers[
+            "Cache-Control"
+        ] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
@@ -80,9 +82,13 @@ def _load_sample_items() -> list[dict[str, str]]:
     rows, _columns = parse_upload(sample_path.name, sample_path.read_bytes())
     items = [normalize_input_row(row) for row in rows]
     return [
-        item for item in items
-        if item.get("asin") or item.get("url") or item.get("name")
-        or item.get("upc") or item.get("model")
+        item
+        for item in items
+        if item.get("asin")
+        or item.get("url")
+        or item.get("name")
+        or item.get("upc")
+        or item.get("model")
     ][:MAX_BATCH]
 
 
@@ -92,7 +98,10 @@ def _base_result(item: dict, *, status="Needs review", error="") -> dict:
         "error": error,
         "asin": item.get("asin", ""),
         "url": item.get("url", ""),
-        "title": item.get("name", "") or item.get("model", "") or item.get("upc", "") or "Inventory product",
+        "title": item.get("name", "")
+        or item.get("model", "")
+        or item.get("upc", "")
+        or "Inventory product",
         "brand": item.get("brand", ""),
         "price": "",
         "availability": "",
@@ -139,9 +148,15 @@ def _merge_amazon_result(amazon_result: dict, item: dict) -> dict:
 def _result_identity(result: dict) -> str:
     source = result.get("sourceInput") or {}
     return str(
-        result.get("asin") or source.get("asin") or source.get("sku")
-        or source.get("upc") or source.get("model")
-        or source.get("url") or source.get("name") or result.get("title") or ""
+        result.get("asin")
+        or source.get("asin")
+        or source.get("sku")
+        or source.get("upc")
+        or source.get("model")
+        or source.get("url")
+        or source.get("name")
+        or result.get("title")
+        or ""
     )
 
 
@@ -198,23 +213,27 @@ def pricing():
 
 @app.get("/health")
 def health():
-    return jsonify({
-        "ok": True,
-        "service": "ProductIQ",
-        "build": PRODUCTIQ_BUILD,
-        "maxBatch": MAX_BATCH,
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "service": "ProductIQ",
+            "build": PRODUCTIQ_BUILD,
+            "maxBatch": MAX_BATCH,
+        }
+    )
 
 
 @app.get("/api/features")
 def feature_manifest():
-    return jsonify({
-        "ok": True,
-        "service": "ProductIQ",
-        "build": PRODUCTIQ_BUILD,
-        "features": PRODUCTIQ_FEATURES,
-        "maxBatch": MAX_BATCH,
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "service": "ProductIQ",
+            "build": PRODUCTIQ_BUILD,
+            "features": PRODUCTIQ_FEATURES,
+            "maxBatch": MAX_BATCH,
+        }
+    )
 
 
 @app.get("/api/catalog")
@@ -227,7 +246,10 @@ def load_sample_products():
     try:
         items = _load_sample_items()
     except (OSError, ValueError) as exc:
-        return jsonify({"error": f"Could not load the included sample data: {exc}"}), 500
+        return (
+            jsonify({"error": f"Could not load the included sample data: {exc}"}),
+            500,
+        )
     return jsonify({"items": items, "count": len(items)})
 
 
@@ -253,12 +275,14 @@ def research_competitor_endpoint():
 
     try:
         updated = add_intelligence(dict(result), source, research_market=True)
-        return jsonify({
-            "competitors": updated.get("competitors") or [],
-            "pricing": updated.get("pricing") or {},
-            "catalogCategory": updated.get("catalogCategory") or {},
-            "competitorResearch": updated.get("competitorResearch") or {},
-        })
+        return jsonify(
+            {
+                "competitors": updated.get("competitors") or [],
+                "pricing": updated.get("pricing") or {},
+                "catalogCategory": updated.get("catalogCategory") or {},
+                "competitorResearch": updated.get("competitorResearch") or {},
+            }
+        )
     except Exception as exc:
         return jsonify({"error": f"Competitor research failed: {exc}"}), 500
 
@@ -278,19 +302,33 @@ def create_job():
     payload = request.get_json(silent=True) or {}
     raw_items = payload.get("items") or []
     if not isinstance(raw_items, list) or not raw_items:
-        return jsonify({
-            "error": "Add at least one ASIN, Amazon URL, product name, UPC/EAN, or model number."
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "Add at least one ASIN, Amazon URL, product name, UPC/EAN, or model number."
+                }
+            ),
+            400,
+        )
     if len(raw_items) > MAX_BATCH:
-        return jsonify({
-            "error": f"The hosted version processes up to {MAX_BATCH} products per batch."
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": f"The hosted version processes up to {MAX_BATCH} products per batch."
+                }
+            ),
+            400,
+        )
 
     items = [normalize_input_row(item) for item in raw_items]
     items = [
-        item for item in items
-        if item.get("asin") or item.get("url") or item.get("name")
-        or item.get("upc") or item.get("model")
+        item
+        for item in items
+        if item.get("asin")
+        or item.get("url")
+        or item.get("name")
+        or item.get("upc")
+        or item.get("model")
     ]
     if not items:
         return jsonify({"error": "No usable product identifiers were found."}), 400
@@ -298,15 +336,25 @@ def create_job():
     try:
         amazon_session = create_amazon_session()
     except AmazonResearchError as exc:
-        return jsonify({
-            "error": f"Could not start the Amazon browser session: {exc}",
-            "stage": "browser-startup",
-        }), 503
+        return (
+            jsonify(
+                {
+                    "error": f"Could not start the Amazon browser session: {exc}",
+                    "stage": "browser-startup",
+                }
+            ),
+            503,
+        )
     except Exception as exc:
-        return jsonify({
-            "error": f"Could not start the Amazon browser session: {type(exc).__name__}: {exc}",
-            "stage": "browser-startup",
-        }), 503
+        return (
+            jsonify(
+                {
+                    "error": f"Could not start the Amazon browser session: {type(exc).__name__}: {exc}",
+                    "stage": "browser-startup",
+                }
+            ),
+            503,
+        )
 
     job_id = uuid.uuid4().hex
     JOBS[job_id] = {
@@ -331,15 +379,17 @@ def process_next(job_id: str):
         return jsonify({"error": "This job expired. Start the batch again."}), 404
 
     if job.get("status") == "captcha_required":
-        return jsonify({
-            "done": False,
-            "captchaRequired": True,
-            "processed": job["nextIndex"],
-            "total": len(job["items"]),
-            "message": "Amazon is still waiting for verification.",
-            "verificationUrl": f"/verify/{job_id}",
-            "partialResult": job.get("pendingPartial"),
-        })
+        return jsonify(
+            {
+                "done": False,
+                "captchaRequired": True,
+                "processed": job["nextIndex"],
+                "total": len(job["items"]),
+                "message": "Amazon is still waiting for verification.",
+                "verificationUrl": f"/verify/{job_id}",
+                "partialResult": job.get("pendingPartial"),
+            }
+        )
 
     index = job["nextIndex"]
     if index >= len(job["items"]):
@@ -374,15 +424,17 @@ def process_next(job_id: str):
         job["status"] = "captcha_required"
         job["captcha"] = exc.challenge
         job["pendingPartial"] = partial
-        return jsonify({
-            "done": False,
-            "captchaRequired": True,
-            "processed": job["nextIndex"],
-            "total": len(job["items"]),
-            "message": str(exc),
-            "verificationUrl": f"/verify/{job_id}",
-            "partialResult": partial,
-        })
+        return jsonify(
+            {
+                "done": False,
+                "captchaRequired": True,
+                "processed": job["nextIndex"],
+                "total": len(job["items"]),
+                "message": str(exc),
+                "verificationUrl": f"/verify/{job_id}",
+                "partialResult": partial,
+            }
+        )
 
     except AmazonResearchError as exc:
         result = _base_result(item, status="Needs review", error=str(exc))
@@ -407,14 +459,16 @@ def process_next(job_id: str):
     elif REQUEST_DELAY:
         time.sleep(REQUEST_DELAY)
 
-    return jsonify({
-        "done": done,
-        "index": index,
-        "processed": job["nextIndex"],
-        "total": len(job["items"]),
-        "result": result,
-        "identity": _result_identity(result),
-    })
+    return jsonify(
+        {
+            "done": done,
+            "index": index,
+            "processed": job["nextIndex"],
+            "total": len(job["items"]),
+            "result": result,
+            "identity": _result_identity(result),
+        }
+    )
 
 
 @app.get("/api/jobs/<job_id>")
@@ -445,12 +499,15 @@ def verify_amazon(job_id: str):
     try:
         job = _get_job(job_id)
     except KeyError:
-        return render_template(
-            "captcha_verify.html",
-            job_id=job_id,
-            expired=True,
-            has_image=False,
-        ), 404
+        return (
+            render_template(
+                "captcha_verify.html",
+                job_id=job_id,
+                expired=True,
+                has_image=False,
+            ),
+            404,
+        )
 
     challenge = job.get("captcha") or {}
     return render_template(
@@ -471,9 +528,7 @@ def captcha_image(job_id: str):
 
     challenge = job.get("captcha") or {}
     try:
-        image_bytes, content_type = fetch_captcha_image(
-            job["_httpSession"], challenge
-        )
+        image_bytes, content_type = fetch_captcha_image(job["_httpSession"], challenge)
     except AmazonResearchError as exc:
         return jsonify({"error": str(exc)}), 502
 
@@ -505,22 +560,28 @@ def solve_captcha(job_id: str):
     except AmazonCaptchaRequired as exc:
         job["captcha"] = exc.challenge
         job["status"] = "captcha_required"
-        return jsonify({
-            "accepted": False,
-            "message": str(exc),
-            "verificationUrl": f"/verify/{job_id}",
-            "hasCapturedImage": bool(exc.challenge.get("imageData")),
-        }), 400
+        return (
+            jsonify(
+                {
+                    "accepted": False,
+                    "message": str(exc),
+                    "verificationUrl": f"/verify/{job_id}",
+                    "hasCapturedImage": bool(exc.challenge.get("imageData")),
+                }
+            ),
+            400,
+        )
     except AmazonResearchError as exc:
         return jsonify({"accepted": False, "message": str(exc)}), 400
 
     job["captcha"] = None
     job["status"] = "ready"
-    return jsonify({
-        "accepted": True,
-        "message": "Amazon accepted the verification. Return to ProductIQ and the same product will continue.",
-    })
-
+    return jsonify(
+        {
+            "accepted": True,
+            "message": "Amazon accepted the verification. Return to ProductIQ and the same product will continue.",
+        }
+    )
 
 
 @app.get("/api/jobs/<job_id>/browser-debug")
@@ -532,13 +593,15 @@ def browser_debug(job_id: str):
 
     session = job.get("_httpSession")
     if not session:
-        return jsonify({
-            "events": [],
-            "url": "",
-            "title": "",
-            "hasScreenshot": False,
-            "closed": True,
-        })
+        return jsonify(
+            {
+                "events": [],
+                "url": "",
+                "title": "",
+                "hasScreenshot": False,
+                "closed": True,
+            }
+        )
     try:
         return jsonify(session.debug_state())
     except Exception as exc:
@@ -554,7 +617,10 @@ def browser_screenshot(job_id: str):
 
     session = job.get("_httpSession")
     if not session:
-        return jsonify({"error": "The Amazon browser session is no longer running."}), 404
+        return (
+            jsonify({"error": "The Amazon browser session is no longer running."}),
+            404,
+        )
 
     image = session.latest_screenshot()
     if not image:
@@ -572,14 +638,48 @@ def browser_screenshot(job_id: str):
 
 
 CSV_HEADERS = [
-    "Status", "ASIN", "Title", "Brand", "Price", "Availability", "Rating",
-    "Review Count", "Seller", "Amazon URL", "Amazon Category", "Bullet Points",
-    "Description", "Model Number", "Part Number", "Dimensions", "Weight",
-    "Manufacturer", "Image 1", "Image 2", "Image 3", "Image 4", "Image 5",
-    "SKU", "UPC/EAN", "Store Category", "Store Subcategory", "Category Confidence",
-    "Input Cost", "Market Low", "Market Average", "Market High", "Suggested Price",
-    "Competitive Price", "Premium Price", "Break Even", "Estimated Profit",
-    "Estimated Margin %", "Competitors", "Cross-Sells", "Upsells", "Error",
+    "Status",
+    "ASIN",
+    "Title",
+    "Brand",
+    "Price",
+    "Availability",
+    "Rating",
+    "Review Count",
+    "Seller",
+    "Amazon URL",
+    "Amazon Category",
+    "Bullet Points",
+    "Description",
+    "Model Number",
+    "Part Number",
+    "Dimensions",
+    "Weight",
+    "Manufacturer",
+    "Image 1",
+    "Image 2",
+    "Image 3",
+    "Image 4",
+    "Image 5",
+    "SKU",
+    "UPC/EAN",
+    "Store Category",
+    "Store Subcategory",
+    "Category Confidence",
+    "Input Cost",
+    "Market Low",
+    "Market Average",
+    "Market High",
+    "Suggested Price",
+    "Competitive Price",
+    "Premium Price",
+    "Break Even",
+    "Estimated Profit",
+    "Estimated Margin %",
+    "Competitors",
+    "Cross-Sells",
+    "Upsells",
+    "Error",
 ]
 
 
@@ -589,22 +689,40 @@ def _export_row(result):
     category = result.get("catalogCategory") or {}
     source = result.get("sourceInput") or {}
     return [
-        result.get("status", ""), result.get("asin", ""), result.get("title", ""),
-        result.get("brand", ""), result.get("price", ""), result.get("availability", ""),
-        result.get("rating", ""), result.get("reviewCount", ""), result.get("seller", ""),
-        result.get("url", ""), " > ".join(result.get("categories") or []),
-        " | ".join(result.get("bullets") or []), result.get("description", ""),
-        result.get("modelNumber", ""), result.get("partNumber", ""),
-        result.get("dimensions", ""), result.get("weight", ""), result.get("manufacturer", ""),
+        result.get("status", ""),
+        result.get("asin", ""),
+        result.get("title", ""),
+        result.get("brand", ""),
+        result.get("price", ""),
+        result.get("availability", ""),
+        result.get("rating", ""),
+        result.get("reviewCount", ""),
+        result.get("seller", ""),
+        result.get("url", ""),
+        " > ".join(result.get("categories") or []),
+        " | ".join(result.get("bullets") or []),
+        result.get("description", ""),
+        result.get("modelNumber", ""),
+        result.get("partNumber", ""),
+        result.get("dimensions", ""),
+        result.get("weight", ""),
+        result.get("manufacturer", ""),
         *(images + [""] * 5)[:5],
-        source.get("sku", ""), source.get("upc", ""),
-        category.get("category", ""), category.get("subcategory", ""),
+        source.get("sku", ""),
+        source.get("upc", ""),
+        category.get("category", ""),
+        category.get("subcategory", ""),
         category.get("confidence", ""),
-        pricing.get("cost", ""), pricing.get("marketLow", ""),
-        pricing.get("marketAverage", ""), pricing.get("marketHigh", ""),
-        pricing.get("suggestedPrice", ""), pricing.get("competitivePrice", ""),
-        pricing.get("premiumPrice", ""), pricing.get("breakEven", ""),
-        pricing.get("estimatedProfit", ""), pricing.get("estimatedMargin", ""),
+        pricing.get("cost", ""),
+        pricing.get("marketLow", ""),
+        pricing.get("marketAverage", ""),
+        pricing.get("marketHigh", ""),
+        pricing.get("suggestedPrice", ""),
+        pricing.get("competitivePrice", ""),
+        pricing.get("premiumPrice", ""),
+        pricing.get("breakEven", ""),
+        pricing.get("estimatedProfit", ""),
+        pricing.get("estimatedMargin", ""),
         " | ".join(
             f"{row.get('retailer', '')}: "
             f"{'$' + str(row.get('price')) if row.get('price') is not None else 'price unavailable'} "
