@@ -47,9 +47,13 @@ def normalize_input_row(row: Any) -> dict[str, str]:
     url = first("url", "product url", "amazon url", "web page url", "link")
     asin = first("asin", "amazon asin", "amazon id") or extract_asin(url)
     brand = first("brand", "manufacturer")
-    model = first("model", "model number", "mpn", "manufacturer part number", "part number")
+    model = first(
+        "model", "model number", "mpn", "manufacturer part number", "part number"
+    )
     upc = first("upc", "ean", "gtin", "gtin12", "gtin13", "barcode")
-    name = first("name", "product name", "title", "product title", "item name", "description")
+    name = first(
+        "name", "product name", "title", "product title", "item name", "description"
+    )
     if not name:
         name = " ".join(value for value in [brand, model, upc] if value)
 
@@ -102,7 +106,9 @@ def parse_upload(filename: str, data: bytes) -> tuple[list[dict[str, str]], list
     if suffix == "xls":
         try:
             frame = pd.read_excel(io.BytesIO(data), dtype=str).fillna("")
-            return frame.to_dict(orient="records"), [str(column) for column in frame.columns]
+            return frame.to_dict(orient="records"), [
+                str(column) for column in frame.columns
+            ]
         except Exception as exc:
             raise ValueError(f"Could not read the XLS file: {exc}")
 
