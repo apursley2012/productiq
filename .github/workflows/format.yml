@@ -1,0 +1,19 @@
+name: Code formatting
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: formatting-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  format:
+    uses: apursley2012/github-standards/.github/workflows/format.yml@v1
+    with:
+      mode: write
