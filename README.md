@@ -7,7 +7,7 @@ Date: August 2026
 
 <div align="center">
 
-<img src="./productiq-app/ProductIQ/static/assets/productiq-logo.PNG" alt="ProductIQ logo" width="65%">
+<img src="./productiq-app/ProductIQ/static/assets/productiq-logo.PNG" alt="ProductIQ logo" width="512px" height="auto">
 
 <h1>ProductIQ 🔎</h1>
 
